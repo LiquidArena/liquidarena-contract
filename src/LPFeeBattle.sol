@@ -13,20 +13,23 @@ interface INonfungiblePositionManager {
 
     function ownerOf(uint256 tokenId) external view returns (address);
 
-    function positions(uint256 tokenId) external view returns (
-        uint96 nonce,
-        address operator,
-        address token0,
-        address token1,
-        uint24 fee,
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity,
-        uint256 feeGrowthInside0LastX128,
-        uint256 feeGrowthInside1LastX128,
-        uint128 tokensOwed0,
-        uint128 tokensOwed1
-    );
+    function positions(uint256 tokenId)
+        external
+        view
+        returns (
+            uint96 nonce,
+            address operator,
+            address token0,
+            address token1,
+            uint24 fee,
+            int24 tickLower,
+            int24 tickUpper,
+            uint128 liquidity,
+            uint256 feeGrowthInside0LastX128,
+            uint256 feeGrowthInside1LastX128,
+            uint128 tokensOwed0,
+            uint128 tokensOwed1
+        );
 
     function safeTransferFrom(address from, address to, uint256 tokenId) external;
 }
@@ -36,15 +39,18 @@ interface IUniswapV3Factory {
 }
 
 interface IUniswapV3Pool {
-    function slot0() external view returns (
-        uint160 sqrtPriceX96,
-        int24 tick,
-        uint16 observationIndex,
-        uint16 observationCardinality,
-        uint16 observationCardinalityNext,
-        uint8 feeProtocol,
-        bool unlocked
-    );
+    function slot0()
+        external
+        view
+        returns (
+            uint160 sqrtPriceX96,
+            int24 tick,
+            uint16 observationIndex,
+            uint16 observationCardinality,
+            uint16 observationCardinalityNext,
+            uint8 feeProtocol,
+            bool unlocked
+        );
 }
 
 interface IOracle {
@@ -86,24 +92,26 @@ contract LPFeeBattle is IERC721Receiver {
         factory = IUniswapV3Factory(_factory);
     }
 
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external pure override returns (bytes4) {
+    function setOracle(address token, address oracle) external {
+        usdOracles[token] = oracle;
+    }
+
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+        external
+        pure
+        override
+        returns (bytes4)
+    {
         return IERC721Receiver.onERC721Received.selector;
     }
 
     function getLPTokenValueUSD(uint256 tokenId) public view returns (uint256 usdValue) {
-        (
-            , , address token0, address token1, uint24 fee, , , uint128 liquidity, , , ,
-        ) = positionManager.positions(tokenId);
+        (,, address token0, address token1, uint24 fee,,, uint128 liquidity,,,,) = positionManager.positions(tokenId);
 
         address pool = factory.getPool(token0, token1, fee);
         require(pool != address(0), "Pool not found");
 
-        (uint160 sqrtPriceX96, , , , , , ) = IUniswapV3Pool(pool).slot0();
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
 
         uint256 amount0 = uint256(liquidity) * 1e18 / uint256(sqrtPriceX96);
         uint256 amount1 = uint256(liquidity) * uint256(sqrtPriceX96) / 1e18;
@@ -131,9 +139,7 @@ contract LPFeeBattle is IERC721Receiver {
         require(positionManager.ownerOf(tokenId) == msg.sender, "Not LP owner");
         positionManager.safeTransferFrom(msg.sender, address(this), tokenId);
 
-        (
-            , , , , , , , , , , uint128 owed0, uint128 owed1
-        ) = positionManager.positions(tokenId);
+        (,,,,,,,,,, uint128 owed0, uint128 owed1) = positionManager.positions(tokenId);
 
         uint256 lpValue = getLPTokenValueUSD(tokenId);
 
@@ -162,6 +168,7 @@ contract LPFeeBattle is IERC721Receiver {
         Battle storage b = battles[battleId];
         require(b.opponent == address(0), "Already joined");
         require(!b.isResolved, "Already resolved");
+        require(positionManager.ownerOf(tokenId) == msg.sender, "Not LP owner");
 
         uint256 joinerLPValue = getLPTokenValueUSD(tokenId);
         require(
@@ -170,7 +177,7 @@ contract LPFeeBattle is IERC721Receiver {
         );
 
         positionManager.safeTransferFrom(msg.sender, address(this), tokenId);
-        (, , , , , , , , , , uint128 owed0, uint128 owed1) = positionManager.positions(tokenId);
+        (,,,,,,,,,, uint128 owed0, uint128 owed1) = positionManager.positions(tokenId);
 
         battleStart[battleId] = block.timestamp + b.duration;
         b.opponent = msg.sender;
@@ -188,8 +195,8 @@ contract LPFeeBattle is IERC721Receiver {
         require(b.opponent != address(0), "Not started");
         require(block.timestamp >= battleStart[battleId], "Not finished");
 
-        (, , , , , , , , , , uint128 newCreatorFee0, uint128 newCreatorFee1) = positionManager.positions(b.creatorTokenId);
-        (, , , , , , , , , , uint128 newOpponentFee0, uint128 newOpponentFee1) = positionManager.positions(b.opponentTokenId);
+        (,,,,,,,,,, uint128 newCreatorFee0, uint128 newCreatorFee1) = positionManager.positions(b.creatorTokenId);
+        (,,,,,,,,,, uint128 newOpponentFee0, uint128 newOpponentFee1) = positionManager.positions(b.opponentTokenId);
 
         uint256 creatorFeeGrowth = (newCreatorFee0 - b.creatorStartFee0) + (newCreatorFee1 - b.creatorStartFee1);
         uint256 opponentFeeGrowth = (newOpponentFee0 - b.opponentStartFee0) + (newOpponentFee1 - b.opponentStartFee1);
