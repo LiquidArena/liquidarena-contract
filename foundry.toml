@@ -5,6 +5,9 @@ libs = ["lib"]
 metadata = true
 metadata_hash = "none"  # disable ipfs
 use_literal_content = true # use source code
+via_ir = true
+optimizer = true
+optimizer_runs = 200
 
 # Monad Configuration
 eth-rpc-url="https://testnet-rpc.monad.xyz"
