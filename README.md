@@ -109,6 +109,33 @@ const isStable = await helpers.isStablecoin(tokenAddress);
 
 ## 📋 Frontend Helper Functions
 
+### 🆕 NEW: LPBattleVault Frontend Helpers
+
+The LPBattleVault contract now includes comprehensive frontend helper functions to match LPFeeBattle functionality:
+
+#### Complete Battle Information
+- `getCompleteBattleDetails()` - Get all battle info including range status and current tick
+- `getCurrentPerformance()` - Real-time battle performance with current leader
+- `getTimeRemaining()` - Time left in ongoing battles
+
+#### Batch Query Functions  
+- `getAllActiveBattles()` - All non-resolved battles with statuses
+- `getBattlesWaitingForOpponent()` - Battles needing opponents
+- `getBattlesReadyToResolve()` - Battles ready for resolution
+- `getUserBattles()` - User's battles with creator/opponent status
+
+#### Position & Battle Information
+- `getPositionDetails()` - Complete LP position information including fees
+- `getBattleTokenInfo()` - Token pair and pool information
+- `canJoinBattle()` - Validation check for joining battles with reasons
+
+#### Key Benefits for Frontend Developers:
+- ✅ **Batch Queries**: Reduce RPC calls with single function calls
+- ✅ **Real-time Updates**: Get current battle performance and leadership
+- ✅ **Validation Helpers**: Check compatibility before transactions
+- ✅ **Complete Data**: All necessary information in single calls
+- ✅ **Error Prevention**: Validation functions prevent failed transactions
+
 ### Battle Management
 
 ```typescript
@@ -221,6 +248,64 @@ interface LPBattleVault {
     status: string;
   }>;
   getBattleStatus(battleId: BigNumber): Promise<string>;
+  
+  // 🆕 Frontend Helper Functions
+  getCompleteBattleDetails(battleId: BigNumber): Promise<{
+    creator: string;
+    opponent: string;
+    creatorTokenId: BigNumber;
+    opponentTokenId: BigNumber;
+    isResolved: boolean;
+    winner: string;
+    startTime: BigNumber;
+    duration: BigNumber;
+    valueUSD: BigNumber;
+    status: string;
+    creatorInRange: boolean;
+    opponentInRange: boolean;
+    currentTick: number;
+  }>;
+  
+  getTimeRemaining(battleId: BigNumber): Promise<BigNumber>;
+  
+  getCurrentPerformance(battleId: BigNumber): Promise<{
+    creatorInRange: boolean;
+    opponentInRange: boolean;
+    creatorFees: BigNumber;
+    opponentFees: BigNumber;
+    currentLeader: string;
+    leadReason: string;
+  }>;
+  
+  // Batch query functions
+  getAllActiveBattles(): Promise<[BigNumber[], string[]]>; // battleIds, statuses
+  getBattlesWaitingForOpponent(): Promise<BigNumber[]>;
+  getBattlesReadyToResolve(): Promise<BigNumber[]>;
+  getUserBattles(user: string): Promise<[BigNumber[], boolean[]]>; // battleIds, isCreator
+  
+  // Battle information
+  getBattleTokenInfo(battleId: BigNumber): Promise<{
+    token0: string;
+    token1: string;
+    fee: number;
+    poolName: string;
+  }>;
+  
+  canJoinBattle(battleId: BigNumber, userTokenId: BigNumber): Promise<[boolean, string]>; // canJoin, reason
+  
+  getPositionDetails(tokenId: BigNumber): Promise<{
+    token0: string;
+    token1: string;
+    fee: number;
+    tickLower: number;
+    tickUpper: number;
+    liquidity: BigNumber;
+    amount0: BigNumber;
+    amount1: BigNumber;
+    valueUSD: BigNumber;
+    fees0: BigNumber;
+    fees1: BigNumber;
+  }>;
   
   // Configuration
   setStablecoin(token: string, isStablecoin: boolean): Promise<void>; // onlyOwner
@@ -357,7 +442,293 @@ contract.on("BattleResolved", (battleId, winner) => {
 
 ## 💡 Frontend Implementation Examples
 
-### Battle List Component
+### LPBattleVault Usage Examples
+
+#### Complete Battle Information Display
+
+```typescript
+function BattleDetailsCard({ battleId }: { battleId: BigNumber }) {
+  const [battleDetails, setBattleDetails] = useState(null);
+  
+  useEffect(() => {
+    async function loadBattleDetails() {
+      const details = await lpBattleVault.getCompleteBattleDetails(battleId);
+      setBattleDetails(details);
+    }
+    loadBattleDetails();
+  }, [battleId]);
+  
+  if (!battleDetails) return <div>Loading...</div>;
+  
+  return (
+    <div className="battle-card">
+      <h3>Battle #{battleId.toString()}</h3>
+      <div className="participants">
+        <div>Creator: {battleDetails.creator}</div>
+        <div>Opponent: {battleDetails.opponent || "Waiting..."}</div>
+      </div>
+      <div className="battle-status">
+        <div>Status: {battleDetails.status}</div>
+        <div>Value: {ethers.utils.formatEther(battleDetails.valueUSD)} USD</div>
+        {battleDetails.opponent && (
+          <div className="range-status">
+            <div>Creator in range: {battleDetails.creatorInRange ? "✅" : "❌"}</div>
+            <div>Opponent in range: {battleDetails.opponentInRange ? "✅" : "❌"}</div>
+            <div>Current tick: {battleDetails.currentTick}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+#### Real-time Battle Performance
+
+```typescript
+function BattlePerformance({ battleId }: { battleId: BigNumber }) {
+  const [performance, setPerformance] = useState(null);
+  const [timeRemaining, setTimeRemaining] = useState(BigNumber.from(0));
+  
+  useEffect(() => {
+    async function updatePerformance() {
+      try {
+        const perf = await lpBattleVault.getCurrentPerformance(battleId);
+        const remaining = await lpBattleVault.getTimeRemaining(battleId);
+        setPerformance(perf);
+        setTimeRemaining(remaining);
+      } catch (error) {
+        console.log("Battle not started yet");
+      }
+    }
+    
+    updatePerformance();
+    const interval = setInterval(updatePerformance, 10000); // Update every 10 seconds
+    
+    return () => clearInterval(interval);
+  }, [battleId]);
+  
+  if (!performance) return <div>Battle not started</div>;
+  
+  const formatTime = (seconds: BigNumber) => {
+    const total = seconds.toNumber();
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  };
+  
+  return (
+    <div className="battle-performance">
+      <h4>Live Performance</h4>
+      <div className="time-remaining">
+        Time remaining: {formatTime(timeRemaining)}
+      </div>
+      <div className="current-leader">
+        <div>Current leader: {performance.currentLeader}</div>
+        <div>Reason: {performance.leadReason}</div>
+      </div>
+      <div className="fee-comparison">
+        <div>Creator fees: {ethers.utils.formatEther(performance.creatorFees)}</div>
+        <div>Opponent fees: {ethers.utils.formatEther(performance.opponentFees)}</div>
+      </div>
+    </div>
+  );
+}
+```
+
+#### Battle List with Different Categories
+
+```typescript
+function BattleList() {
+  const [waitingBattles, setWaitingBattles] = useState<BigNumber[]>([]);
+  const [activeBattles, setActiveBattles] = useState<[BigNumber[], string[]]>([[], []]);
+  const [readyBattles, setReadyBattles] = useState<BigNumber[]>([]);
+  
+  useEffect(() => {
+    async function loadBattles() {
+      const waiting = await lpBattleVault.getBattlesWaitingForOpponent();
+      const active = await lpBattleVault.getAllActiveBattles();
+      const ready = await lpBattleVault.getBattlesReadyToResolve();
+      
+      setWaitingBattles(waiting);
+      setActiveBattles(active);
+      setReadyBattles(ready);
+    }
+    loadBattles();
+  }, []);
+  
+  return (
+    <div className="battle-lists">
+      <section>
+        <h3>Waiting for Opponent ({waitingBattles.length})</h3>
+        {waitingBattles.map(battleId => (
+          <BattleCard key={battleId.toString()} battleId={battleId} />
+        ))}
+      </section>
+      
+      <section>
+        <h3>Active Battles ({activeBattles[0].length})</h3>
+        {activeBattles[0].map((battleId, index) => (
+          <BattleCard 
+            key={battleId.toString()} 
+            battleId={battleId} 
+            status={activeBattles[1][index]} 
+          />
+        ))}
+      </section>
+      
+      <section>
+        <h3>Ready to Resolve ({readyBattles.length})</h3>
+        {readyBattles.map(battleId => (
+          <ResolvableBattleCard key={battleId.toString()} battleId={battleId} />
+        ))}
+      </section>
+    </div>
+  );
+}
+```
+
+#### Position Details for LP Selection
+
+```typescript
+function PositionSelector({ userPositions, onSelect }: { 
+  userPositions: BigNumber[], 
+  onSelect: (tokenId: BigNumber) => void 
+}) {
+  const [positionDetails, setPositionDetails] = useState<Map<string, any>>(new Map());
+  
+  useEffect(() => {
+    async function loadPositions() {
+      const details = new Map();
+      for (const tokenId of userPositions) {
+        const detail = await lpBattleVault.getPositionDetails(tokenId);
+        details.set(tokenId.toString(), detail);
+      }
+      setPositionDetails(details);
+    }
+    loadPositions();
+  }, [userPositions]);
+  
+  return (
+    <div className="position-selector">
+      <h3>Select LP Position for Battle</h3>
+      {userPositions.map(tokenId => {
+        const detail = positionDetails.get(tokenId.toString());
+        if (!detail) return <div key={tokenId.toString()}>Loading...</div>;
+        
+        return (
+          <div 
+            key={tokenId.toString()} 
+            className="position-card"
+            onClick={() => onSelect(tokenId)}
+          >
+            <div>Token ID: {tokenId.toString()}</div>
+            <div>Pool: {detail.token0.slice(0, 6)}.../{detail.token1.slice(0, 6)}... ({detail.fee/100}%)</div>
+            <div>Range: {detail.tickLower} to {detail.tickUpper}</div>
+            <div>Value: {ethers.utils.formatEther(detail.valueUSD)} USD</div>
+            <div>Liquidity: {ethers.utils.formatEther(detail.liquidity)}</div>
+            <div>Uncollected Fees: {ethers.utils.formatEther(detail.fees0.add(detail.fees1))}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+```
+
+#### Battle Compatibility Checker
+
+```typescript
+function JoinBattleButton({ battleId, userTokenId }: { 
+  battleId: BigNumber, 
+  userTokenId: BigNumber 
+}) {
+  const [canJoin, setCanJoin] = useState(false);
+  const [reason, setReason] = useState("");
+  const [battleInfo, setBattleInfo] = useState(null);
+  
+  useEffect(() => {
+    async function checkCompatibility() {
+      const [joinable, joinReason] = await lpBattleVault.canJoinBattle(battleId, userTokenId);
+      const info = await lpBattleVault.getBattleTokenInfo(battleId);
+      
+      setCanJoin(joinable);
+      setReason(joinReason);
+      setBattleInfo(info);
+    }
+    checkCompatibility();
+  }, [battleId, userTokenId]);
+  
+  const handleJoin = async () => {
+    if (canJoin) {
+      try {
+        // Approve NFT transfer
+        await positionManager.approve(lpBattleVault.address, userTokenId);
+        
+        // Join battle
+        const tx = await lpBattleVault.joinBattle(battleId, userTokenId);
+        await tx.wait();
+        
+        console.log("Successfully joined battle!");
+      } catch (error) {
+        console.error("Failed to join battle:", error);
+      }
+    }
+  };
+  
+  return (
+    <div className="join-battle">
+      {battleInfo && (
+        <div className="battle-info">
+          <div>Pool: {battleInfo.poolName}</div>
+          <div>Tokens: {battleInfo.token0.slice(0, 6)}.../{battleInfo.token1.slice(0, 6)}...</div>
+        </div>
+      )}
+      <button 
+        disabled={!canJoin} 
+        onClick={handleJoin}
+        className={canJoin ? "join-enabled" : "join-disabled"}
+      >
+        {canJoin ? "Join Battle" : reason}
+      </button>
+    </div>
+  );
+}
+```
+
+#### User's Battle History
+
+```typescript
+function UserBattles({ userAddress }: { userAddress: string }) {
+  const [userBattles, setUserBattles] = useState<{battleIds: BigNumber[], isCreator: boolean[]}>({
+    battleIds: [],
+    isCreator: []
+  });
+  
+  useEffect(() => {
+    async function loadUserBattles() {
+      const [battleIds, isCreator] = await lpBattleVault.getUserBattles(userAddress);
+      setUserBattles({ battleIds, isCreator });
+    }
+    loadUserBattles();
+  }, [userAddress]);
+  
+  return (
+    <div className="user-battles">
+      <h3>Your Battles</h3>
+      {userBattles.battleIds.map((battleId, index) => (
+        <div key={battleId.toString()} className="user-battle-card">
+          <div>Battle #{battleId.toString()}</div>
+          <div>Role: {userBattles.isCreator[index] ? "Creator" : "Opponent"}</div>
+          <BattleDetailsCard battleId={battleId} />
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### General Battle List Component
 
 ```typescript
 function BattleList() {
@@ -470,15 +841,39 @@ CHAIN_ID=10143
 ### Testing
 
 ```bash
-# Run all tests
+# Run all tests (now includes 77 total tests)
 forge test
 
-# Run specific test file
+# Run LPBattleVault tests (38 tests including 11 new frontend helper tests)
+forge test --match-path test/LPBattleVaultTest.t.sol
+
+# Run LPFeeBattle tests (39 tests)
 forge test --match-path test/LPFeeBattleTest.t.sol
+
+# Test specific frontend helper functions
+forge test --match-test "testGetCompleteBattleDetails|testGetCurrentPerformance|testGetTimeRemaining"
 
 # Run with verbose output
 forge test -vv
 ```
+
+#### 🆕 New Test Coverage for LPBattleVault Frontend Helpers
+
+The following new tests ensure all frontend helper functions work correctly:
+
+- `testGetCompleteBattleDetails()` - Complete battle information with range status
+- `testGetTimeRemaining()` - Time calculations and battle duration tracking  
+- `testGetCurrentPerformance()` - Real-time performance and leader determination
+- `testGetAllActiveBattles()` - Batch queries for active battles
+- `testGetBattlesWaitingForOpponent()` - Battles needing opponents
+- `testGetBattlesReadyToResolve()` - Battles ready for resolution
+- `testGetUserBattles()` - User battle history and role tracking
+- `testGetBattleTokenInfo()` - Token pair and pool information
+- `testCanJoinBattle()` - Battle compatibility validation
+- `testGetPositionDetails()` - Complete LP position information
+- `testGetCurrentPerformanceWithRangeChanges()` - Dynamic range status updates
+
+**Total Test Coverage**: 77 tests (38 LPBattleVault + 39 LPFeeBattle) - All passing ✅
 
 ### Deployment
 
