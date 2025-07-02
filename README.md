@@ -9,14 +9,16 @@ A DeFi protocol for Uniswap V3 LP position battles on Monad Testnet with **pool-
 1. **LPBattleVault** - Price range battles where users compete based on whether their LP positions remain in-range at battle end
 2. **LPFeeBattle** - Fee accumulation battles where users compete based on fee growth rate during battle period
 
-### 🔥 **NEW: Pool-Based Pricing System**
+### 🔥 **KEY FEATURES**
 
-Our system uses **Uniswap V3 pool prices** instead of external oracles for USD value calculations:
+Our system uses **Uniswap V3 pool prices** and **cross-pool battles** for maximum flexibility:
 
 - ✅ **No Oracle Dependencies**: Works without Chainlink or external price feeds
+- ✅ **Cross-Pool Battles**: Battle between different pools (ETH/USDC vs MON/USDC)
+- ✅ **Gas Optimized**: Library architecture reduces deployment costs by 13.5%
 - ✅ **Automatic Price Discovery**: Uses pool `sqrtPriceX96` for real-time pricing
 - ✅ **Stablecoin Support**: USDC/USDT as USD reference points
-- ✅ **Universal Compatibility**: Works with any token pair on Monad
+- ✅ **Universal Compatibility**: Works with any token pair
 - ✅ **Manipulation Resistant**: Uses on-chain pool consensus
 
 ### ⚠️ Important: Fee Collection Mechanism
@@ -31,7 +33,14 @@ Both contracts collect fees from LP positions and distribute them to the winner:
 
 ### Network Information
 
-- **Chain**: Monad Testnet (Chain ID: 10143)
+**Sepolia Testnet (Recommended)**
+- **Chain**: Ethereum Sepolia (Chain ID: 11155111)
+- **RPC URL**: `https://ethereum-sepolia-rpc.publicnode.com`
+- **Position Manager**: `0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4`
+- **Factory**: `0x0227628f3F023bb0B980b67D528571c95c6DaC1c`
+
+**Monad Testnet (Alternative)**
+- **Chain**: Monad Testnet (Chain ID: 10143) 
 - **RPC URL**: `https://testnet-rpc.monad.xyz`
 - **Position Manager**: `0x3dCc735C74F10FE2B9db2BB55C40fbBbf24490f7`
 - **Factory**: `0x961235a9020B05C44DF1026D956D1F4D78014276`
@@ -43,11 +52,25 @@ Both contracts collect fees from LP positions and distribute them to the winner:
 ```bash
 # Set environment variables
 export PRIVATE_KEY="your_private_key"
-export RPC_URL="https://testnet-rpc.monad.xyz"
+export RPC_URL="https://ethereum-sepolia-rpc.publicnode.com"  # Or your preferred Sepolia RPC
 
-# Deploy complete system with helpers
-forge script script/DeployWithHelpers.s.sol --rpc-url $RPC_URL --broadcast --verify
+# Deploy optimized system with libraries (Sepolia)
+forge script script/DeployLPBattleVault.s.sol --rpc-url $RPC_URL --broadcast --verify
+
+# OR use the CLI deployment script
+chmod +x deploy-sepolia.sh
+./deploy-sepolia.sh
 ```
+
+### 🆕 **Gas-Optimized Architecture**
+
+The contracts now use a **library-based architecture** for maximum gas efficiency:
+
+- **Main Contract**: 3,379,039 gas (15,311 bytes)
+- **PoolUtils Library**: 1,004,831 gas (batched pool operations)
+- **TransferUtils Library**: 364,419 gas (optimized token transfers) 
+- **StringUtils Library**: 142,205 gas (USD formatting utilities)
+- **Total System Deployment**: ~4.9M gas (libraries reusable across deployments)
 
 ### 2. Frontend Helper Contract
 
@@ -211,9 +234,9 @@ const [canJoin, reason] = await helpers.canJoinBattle(battleId, userTokenId);
 // Get all compatible battles for user's LP
 const compatibleBattles = await helpers.getCompatibleBattles(userTokenId);
 
-// Format USD values for display
-const formattedValue = await helpers.formatUSDValue(valueInWei);
-// Returns: "1,234.56 USD"
+// Format USD values for display (using StringUtils library)
+const formattedValue = await contract.getBattleUSDValue(battleId);
+// Returns: "1,234.56 USD" (formatted string with 2 decimal places)
 ```
 
 ### Pool Price Information
@@ -878,11 +901,15 @@ The following new tests ensure all frontend helper functions work correctly:
 ### Deployment
 
 ```bash
-# Deploy complete system
-forge script script/DeployWithHelpers.s.sol --rpc-url $RPC_URL --broadcast --verify
+# Deploy optimized system with libraries
+forge script script/DeployLPBattleVault.s.sol --rpc-url $RPC_URL --broadcast --verify
 
-# Check deployment addresses
-cat deployment-addresses.txt
+# OR use CLI deployment script for Sepolia
+chmod +x deploy-sepolia.sh
+./deploy-sepolia.sh
+
+# Check deployment status
+forge script script/DeployLPBattleVault.s.sol --rpc-url $RPC_URL --broadcast --verify --resume
 ```
 
 ## 🔐 Security Features

@@ -684,7 +684,7 @@ contract LPBattleVaultTest is Test {
         assertEq(status, "ended");
 
         // Check the actual battle data for draw result  
-        (,,,, bool isResolved, address winner,,,,,,,) = vault.battles(battleId);
+        (,, address winner, bool isResolved,,,,,,,,,) = vault.battles(battleId);
         assertEq(isResolved, true);
         assertEq(winner, address(0)); // Draw
     }
@@ -747,7 +747,7 @@ contract LPBattleVaultTest is Test {
         assertTrue(called2);
 
         // Verify battle ended as draw
-        (,,,, bool isResolved, address winner,,,,,,,) = vault.battles(battleId);
+        (,, address winner, bool isResolved,,,,,,,,,) = vault.battles(battleId);
         assertEq(isResolved, true);
         assertEq(winner, address(0));
     }
@@ -797,7 +797,7 @@ contract LPBattleVaultTest is Test {
         vault.resolveBattle(battleId);
 
         // Winner should be determined by fee comparison
-        (,,,, bool isResolved, address winner,,,,,,,) = vault.battles(battleId);
+        (,, address winner, bool isResolved,,,,,,,,,) = vault.battles(battleId);
         assertEq(isResolved, true);
         assertTrue(winner == creator || winner == opponent);
     }

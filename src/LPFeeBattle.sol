@@ -4,6 +4,9 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IShared.sol";
+import "./libraries/PoolUtils.sol";
+import "./libraries/TransferUtils.sol";
+import "./libraries/StringUtils.sol";
 
 
 contract LPFeeBattle is IERC721Receiver {
@@ -64,7 +67,7 @@ contract LPFeeBattle is IERC721Receiver {
         emit OwnershipTransferred(owner, newOwner);
     }
 
-    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+    function onERC721Received(address, address, uint256, bytes calldata)
         external
         pure
         override
@@ -94,14 +97,8 @@ contract LPFeeBattle is IERC721Receiver {
         view 
         returns (uint256 usdValue) 
     {
-        // Get current pool price for conversion
-        address pool = factory.getPool(token0, token1, 3000); // Assume 0.3% fee pool for price reference
-        if (pool == address(0)) {
-            pool = factory.getPool(token0, token1, 500); // Try 0.05% fee pool
-        }
-        if (pool == address(0)) {
-            pool = factory.getPool(token0, token1, 10000); // Try 1% fee pool
-        }
+        // Use library function for optimized pool data retrieval
+        address pool = findBestPricePool(token0, token1);
         
         if (pool != address(0)) {
             (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
@@ -110,6 +107,17 @@ contract LPFeeBattle is IERC721Receiver {
             // Fallback: assume both tokens have equal value for relative comparison
             usdValue = amount0 + amount1;
         }
+    }
+    
+    function findBestPricePool(address token0, address token1) internal view returns (address) {
+        // Try multiple fee tiers for best liquidity
+        address pool = factory.getPool(token0, token1, 3000); // 0.3% fee
+        if (pool != address(0)) return pool;
+        
+        pool = factory.getPool(token0, token1, 500); // 0.05% fee
+        if (pool != address(0)) return pool;
+        
+        return factory.getPool(token0, token1, 10000); // 1% fee
     }
     
     function calculatePoolBasedValue(
@@ -253,31 +261,23 @@ contract LPFeeBattle is IERC721Receiver {
             })
         );
 
-        // Calculate resolver reward (1% of total fees collected)
+        // Calculate resolver rewards using library
         uint256 totalAmount0 = creatorAmount0 + opponentAmount0;
         uint256 totalAmount1 = creatorAmount1 + opponentAmount1;
         
-        uint256 resolverReward0 = (totalAmount0 * RESOLVER_REWARD_BPS) / 10000;
-        uint256 resolverReward1 = (totalAmount1 * RESOLVER_REWARD_BPS) / 10000;
+        uint256 resolverReward0 = PoolUtils.calculateResolverReward(totalAmount0, RESOLVER_REWARD_BPS);
+        uint256 resolverReward1 = PoolUtils.calculateResolverReward(totalAmount1, RESOLVER_REWARD_BPS);
         
-        // Transfer resolver reward to msg.sender
-        if (resolverReward0 > 0) {
-            IERC20(token0).transfer(msg.sender, resolverReward0);
-        }
-        if (resolverReward1 > 0) {
-            IERC20(token1).transfer(msg.sender, resolverReward1);
-        }
+        // Transfer resolver rewards using library
+        TransferUtils.safeTransferIfNonZero(token0, msg.sender, resolverReward0);
+        TransferUtils.safeTransferIfNonZero(token1, msg.sender, resolverReward1);
         
-        // Transfer remaining fees to winner
+        // Transfer remaining fees to winner using library
         uint256 remainingAmount0 = totalAmount0 - resolverReward0;
         uint256 remainingAmount1 = totalAmount1 - resolverReward1;
         
-        if (remainingAmount0 > 0) {
-            IERC20(token0).transfer(winner, remainingAmount0);
-        }
-        if (remainingAmount1 > 0) {
-            IERC20(token1).transfer(winner, remainingAmount1);
-        }
+        TransferUtils.safeTransferIfNonZero(token0, winner, remainingAmount0);
+        TransferUtils.safeTransferIfNonZero(token1, winner, remainingAmount1);
 
         // Return NFTs to original owners
         positionManager.safeTransferFrom(address(this), b.creator, b.creatorTokenId);
@@ -509,25 +509,196 @@ contract LPFeeBattle is IERC721Receiver {
         
         (,, token0, token1, fee,,,,,,,) = positionManager.positions(b.creatorTokenId);
         
-        // Simple pool name (you might want to get actual token symbols from token contracts)
-        poolName = string(abi.encodePacked("Pool-", uint2str(fee / 100), "bps"));
+        // Simple pool name using library function
+        poolName = string(abi.encodePacked("Pool-", StringUtils.uint2str(fee / 100), "bps"));
     }
 
-    function uint2str(uint256 _i) internal pure returns (string memory str) {
-        if (_i == 0) return "0";
-        uint256 j = _i;
-        uint256 length;
-        while (j != 0) {
-            length++;
-            j /= 10;
+    // Additional Frontend Helper Functions
+    
+    /**
+     * @dev Get formatted USD value for battle
+     */
+    function getBattleUSDValue(uint256 battleId) external view returns (string memory) {
+        uint256 raw = battles[battleId].creatorLPValue;
+        return StringUtils.formatUSDValue(raw);
+    }
+    
+    /**
+     * @dev Get comprehensive battle details for frontend
+     */
+    function getCompleteBattleDetails(uint256 battleId) 
+        external 
+        view 
+        returns (
+            address creator,
+            address opponent,
+            uint256 creatorTokenId,
+            uint256 opponentTokenId,
+            bool isResolved,
+            address winner,
+            uint256 startTime,
+            uint256 duration,
+            uint256 valueUSD,
+            string memory status,
+            uint256 creatorFeeGrowthUSD,
+            uint256 opponentFeeGrowthUSD,
+            uint256 creatorFeeRate,
+            uint256 opponentFeeRate,
+            address currentLeader
+        ) 
+    {
+        Battle memory b = battles[battleId];
+        creator = b.creator;
+        opponent = b.opponent;
+        creatorTokenId = b.creatorTokenId;
+        opponentTokenId = b.opponentTokenId;
+        isResolved = b.isResolved;
+        winner = b.winner;
+        startTime = b.startTime;
+        duration = b.duration;
+        valueUSD = b.creatorLPValue;
+        status = getBattleStatus(battleId);
+        
+        // Get current performance if battle has started
+        if (b.opponent != address(0) && !b.isResolved) {
+            (creatorFeeGrowthUSD, opponentFeeGrowthUSD, creatorFeeRate, opponentFeeRate, currentLeader) = 
+                this.getCurrentFeePerformance(battleId);
         }
-        bytes memory bstr = new bytes(length);
-        uint256 k = length;
-        j = _i;
-        while (j != 0) {
-            bstr[--k] = bytes1(uint8(48 + (j % 10)));
-            j /= 10;
+    }
+    
+    /**
+     * @dev Check if user can join a battle
+     */
+    function canJoinBattle(uint256 battleId, uint256 userTokenId) 
+        external 
+        view 
+        returns (bool canJoin, string memory reason) 
+    {
+        Battle memory b = battles[battleId];
+        
+        if (b.creator == address(0)) {
+            return (false, "Battle does not exist");
         }
-        str = string(bstr);
+        
+        if (b.isResolved) {
+            return (false, "Battle already resolved");
+        }
+        
+        if (b.opponent != address(0)) {
+            return (false, "Battle already has opponent");
+        }
+
+        // Check LP value compatibility (within 5% tolerance)
+        uint256 userUSDValue = getLPTokenValueUSD(userTokenId);
+        uint256 minValue = (b.creatorLPValue * 95) / 100;
+        uint256 maxValue = (b.creatorLPValue * 105) / 100;
+        
+        if (userUSDValue < minValue || userUSDValue > maxValue) {
+            return (false, "LP value not within 5% tolerance");
+        }
+
+        return (true, "Can join battle");
+    }
+    
+    /**
+     * @dev Get position details for a token ID
+     */
+    function getPositionDetails(uint256 tokenId) 
+        external 
+        view 
+        returns (
+            address token0,
+            address token1,
+            uint24 fee,
+            int24 tickLower,
+            int24 tickUpper,
+            uint128 liquidity,
+            uint256 valueUSD,
+            uint256 fees0,
+            uint256 fees1,
+            uint256 feesUSD
+        ) 
+    {
+        uint128 tokensOwed0;
+        uint128 tokensOwed1;
+        
+        (
+            ,
+            ,
+            token0,
+            token1,
+            fee,
+            tickLower,
+            tickUpper,
+            liquidity,
+            ,
+            ,
+            tokensOwed0,
+            tokensOwed1
+        ) = positionManager.positions(tokenId);
+        
+        valueUSD = getLPTokenValueUSD(tokenId);
+        fees0 = uint256(tokensOwed0);
+        fees1 = uint256(tokensOwed1);
+        feesUSD = convertFeesToUSD(fees0, fees1, token0, token1);
+    }
+    
+    /**
+     * @dev Get detailed fee performance with rates
+     */
+    function getDetailedFeePerformance(uint256 battleId) 
+        external 
+        view 
+        returns (
+            uint256 creatorStartFees,
+            uint256 opponentStartFees,
+            uint256 creatorCurrentFees,
+            uint256 opponentCurrentFees,
+            uint256 creatorFeeGrowthUSD,
+            uint256 opponentFeeGrowthUSD,
+            uint256 creatorFeeRate,
+            uint256 opponentFeeRate,
+            address currentLeader,
+            string memory leadReason
+        ) 
+    {
+        Battle memory b = battles[battleId];
+        require(b.opponent != address(0), "Battle not started");
+        
+        if (b.isResolved) {
+            return (0, 0, 0, 0, 0, 0, 0, 0, b.winner, "Battle resolved");
+        }
+
+        (,, address token0, address token1,,,,,,, uint128 newCreatorFee0, uint128 newCreatorFee1) = positionManager.positions(b.creatorTokenId);
+        (,,,,,,,,,, uint128 newOpponentFee0, uint128 newOpponentFee1) = positionManager.positions(b.opponentTokenId);
+
+        // Calculate start fees in USD
+        creatorStartFees = convertFeesToUSD(b.creatorStartFee0, b.creatorStartFee1, token0, token1);
+        opponentStartFees = convertFeesToUSD(b.opponentStartFee0, b.opponentStartFee1, token0, token1);
+        
+        // Calculate current fees in USD
+        creatorCurrentFees = convertFeesToUSD(newCreatorFee0, newCreatorFee1, token0, token1);
+        opponentCurrentFees = convertFeesToUSD(newOpponentFee0, newOpponentFee1, token0, token1);
+        
+        // Calculate fee growth
+        creatorFeeGrowthUSD = creatorCurrentFees > creatorStartFees ? creatorCurrentFees - creatorStartFees : 0;
+        opponentFeeGrowthUSD = opponentCurrentFees > opponentStartFees ? opponentCurrentFees - opponentStartFees : 0;
+
+        // Calculate fee rates
+        creatorFeeRate = b.creatorLPValue > 0 ? (creatorFeeGrowthUSD * 1e24) / b.creatorLPValue : 0;
+        uint256 opponentLPValue = getLPTokenValueUSD(b.opponentTokenId);
+        opponentFeeRate = opponentLPValue > 0 ? (opponentFeeGrowthUSD * 1e24) / opponentLPValue : 0;
+
+        // Determine current leader
+        if (creatorFeeRate > opponentFeeRate) {
+            currentLeader = b.creator;
+            leadReason = "Creator has higher fee rate";
+        } else if (opponentFeeRate > creatorFeeRate) {
+            currentLeader = b.opponent;
+            leadReason = "Opponent has higher fee rate";
+        } else {
+            currentLeader = b.creator;
+            leadReason = "Tied on fee rate (creator advantage)";
+        }
     }
 }

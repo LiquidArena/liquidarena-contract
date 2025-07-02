@@ -1115,3 +1115,274 @@ contract MockERC20 {
         balanceOf[to] += amount;
     }
 }
+
+// Additional tests for new frontend helper functions
+contract LPFeeBattleHelperTest is LPFeeBattleTest {
+    
+    function testGetBattleUSDValue() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        string memory usdValue = battle.getBattleUSDValue(battleId);
+        // Should return formatted USD value like "2000000000000000000.00 USD"
+        assertTrue(bytes(usdValue).length > 0);
+    }
+    
+    function testGetCompleteBattleDetails() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        (
+            address creator_,
+            address opponent_,
+            uint256 creatorTokenId_,
+            uint256 opponentTokenId_,
+            bool isResolved_,
+            address winner_,
+            uint256 startTime_,
+            uint256 duration_,
+            uint256 valueUSD_,
+            string memory status_,
+            uint256 creatorFeeGrowthUSD_,
+            uint256 opponentFeeGrowthUSD_,
+            uint256 creatorFeeRate_,
+            uint256 opponentFeeRate_,
+            address currentLeader_
+        ) = battle.getCompleteBattleDetails(battleId);
+        
+        assertEq(creator_, creator);
+        assertEq(opponent_, address(0));
+        assertEq(creatorTokenId_, creatorTokenId);
+        assertEq(opponentTokenId_, 0);
+        assertFalse(isResolved_);
+        assertEq(winner_, address(0));
+        assertEq(startTime_, 0);
+        assertEq(duration_, 2 hours);
+        assertTrue(valueUSD_ > 0);
+        assertEq(status_, "waiting_for_opponent");
+        // Performance data should be 0 when no opponent
+        assertEq(creatorFeeGrowthUSD_, 0);
+        assertEq(opponentFeeGrowthUSD_, 0);
+        assertEq(creatorFeeRate_, 0);
+        assertEq(opponentFeeRate_, 0);
+        assertEq(currentLeader_, address(0));
+    }
+    
+    function testGetCompleteBattleDetailsAfterJoin() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        vm.startPrank(opponent);
+        battle.joinBattle(battleId, opponentTokenId);
+        vm.stopPrank();
+        
+        (
+            address creator_,
+            address opponent_,
+            uint256 creatorTokenId_,
+            uint256 opponentTokenId_,
+            bool isResolved_,
+            address winner_,
+            uint256 startTime_,
+            uint256 duration_,
+            uint256 valueUSD_,
+            string memory status_,
+            uint256 creatorFeeGrowthUSD_,
+            uint256 opponentFeeGrowthUSD_,
+            uint256 creatorFeeRate_,
+            uint256 opponentFeeRate_,
+            address currentLeader_
+        ) = battle.getCompleteBattleDetails(battleId);
+        
+        assertEq(creator_, creator);
+        assertEq(opponent_, opponent);
+        assertEq(creatorTokenId_, creatorTokenId);
+        assertEq(opponentTokenId_, opponentTokenId);
+        assertFalse(isResolved_);
+        assertEq(winner_, address(0));
+        assertTrue(startTime_ > 0);
+        assertEq(duration_, 2 hours);
+        assertTrue(valueUSD_ > 0);
+        assertEq(status_, "ongoing");
+        // Should have performance data now
+        assertTrue(creatorFeeGrowthUSD_ >= 0);
+        assertTrue(opponentFeeGrowthUSD_ >= 0);
+        assertTrue(currentLeader_ != address(0));
+    }
+    
+    function testCanJoinBattle() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        // Test successful join
+        (bool canJoin, string memory reason) = battle.canJoinBattle(battleId, opponentTokenId);
+        assertTrue(canJoin);
+        assertEq(reason, "Can join battle");
+        
+        // Test after joining
+        vm.startPrank(opponent);
+        battle.joinBattle(battleId, opponentTokenId);
+        vm.stopPrank();
+        
+        // Test cannot join again
+        uint256 anotherTokenId = 3;
+        mockPositionManager.setPositionData(
+            anotherTokenId,
+            opponent,
+            token0,
+            token1,
+            3000,
+            -1000,
+            1000,
+            1000000000000000000,
+            100,
+            200
+        );
+        
+        (canJoin, reason) = battle.canJoinBattle(battleId, anotherTokenId);
+        assertFalse(canJoin);
+        assertEq(reason, "Battle already has opponent");
+    }
+    
+    function testCanJoinBattleValueTolerance() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        // Create a position with value outside 5% tolerance
+        uint256 highValueTokenId = 3;
+        mockPositionManager.setPositionData(
+            highValueTokenId,
+            opponent,
+            token0,
+            token1,
+            3000,
+            -1000,
+            1000,
+            3000000000000000000, // 50% higher value
+            100,
+            200
+        );
+        
+        (bool canJoin, string memory reason) = battle.canJoinBattle(battleId, highValueTokenId);
+        assertFalse(canJoin);
+        assertEq(reason, "LP value not within 5% tolerance");
+    }
+    
+    function testGetPositionDetails() public {
+        (
+            address token0_,
+            address token1_,
+            uint24 fee_,
+            int24 tickLower_,
+            int24 tickUpper_,
+            uint128 liquidity_,
+            uint256 valueUSD_,
+            uint256 fees0_,
+            uint256 fees1_,
+            uint256 feesUSD_
+        ) = battle.getPositionDetails(creatorTokenId);
+        
+        assertEq(token0_, token0);
+        assertEq(token1_, token1);
+        assertEq(fee_, 3000);
+        assertEq(tickLower_, -1000);
+        assertEq(tickUpper_, 1000);
+        assertEq(liquidity_, 1000000000000000000);
+        assertTrue(valueUSD_ > 0);
+        assertTrue(fees0_ >= 0);
+        assertTrue(fees1_ >= 0);
+        assertTrue(feesUSD_ >= 0);
+    }
+    
+    function testGetDetailedFeePerformance() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        vm.startPrank(opponent);
+        battle.joinBattle(battleId, opponentTokenId);
+        vm.stopPrank();
+        
+        // Simulate fee accumulation
+        mockPositionManager.updateFees(creatorTokenId, 1000, 2000);
+        mockPositionManager.updateFees(opponentTokenId, 500, 1000);
+        
+        (
+            uint256 creatorStartFees,
+            uint256 opponentStartFees,
+            uint256 creatorCurrentFees,
+            uint256 opponentCurrentFees,
+            uint256 creatorFeeGrowthUSD,
+            uint256 opponentFeeGrowthUSD,
+            uint256 creatorFeeRate,
+            uint256 opponentFeeRate,
+            address currentLeader,
+            string memory leadReason
+        ) = battle.getDetailedFeePerformance(battleId);
+        
+        assertTrue(creatorStartFees >= 0);
+        assertTrue(opponentStartFees >= 0);
+        assertTrue(creatorCurrentFees >= creatorStartFees);
+        assertTrue(opponentCurrentFees >= opponentStartFees);
+        assertTrue(creatorFeeGrowthUSD >= 0);
+        assertTrue(opponentFeeGrowthUSD >= 0);
+        assertTrue(currentLeader != address(0));
+        assertTrue(bytes(leadReason).length > 0);
+    }
+    
+    function testGetDetailedFeePerformanceNotStarted() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        // Should revert when battle not started
+        vm.expectRevert("Battle not started");
+        battle.getDetailedFeePerformance(battleId);
+    }
+    
+    function testGetDetailedFeePerformanceResolved() public {
+        vm.startPrank(creator);
+        uint256 battleId = battle.createBattle(creatorTokenId, 2 hours);
+        vm.stopPrank();
+        
+        vm.startPrank(opponent);
+        battle.joinBattle(battleId, opponentTokenId);
+        vm.stopPrank();
+        
+        // Fast forward time to resolution
+        vm.warp(block.timestamp + 3 hours);
+        
+        // Resolve battle
+        battle.resolveBattle(battleId);
+        
+        (
+            uint256 creatorStartFees,
+            uint256 opponentStartFees,
+            uint256 creatorCurrentFees,
+            uint256 opponentCurrentFees,
+            uint256 creatorFeeGrowthUSD,
+            uint256 opponentFeeGrowthUSD,
+            uint256 creatorFeeRate,
+            uint256 opponentFeeRate,
+            address currentLeader,
+            string memory leadReason
+        ) = battle.getDetailedFeePerformance(battleId);
+        
+        // Should return zeros for resolved battle
+        assertEq(creatorStartFees, 0);
+        assertEq(opponentStartFees, 0);
+        assertEq(creatorCurrentFees, 0);
+        assertEq(opponentCurrentFees, 0);
+        assertEq(creatorFeeGrowthUSD, 0);
+        assertEq(opponentFeeGrowthUSD, 0);
+        assertEq(creatorFeeRate, 0);
+        assertEq(opponentFeeRate, 0);
+        assertTrue(currentLeader != address(0)); // Should be the winner
+        assertEq(leadReason, "Battle resolved");
+    }
+}
