@@ -28,7 +28,8 @@ contract LPBattleVaultTest is Test {
     MockPositionManager public mockPositionManager;
     MockFactory public mockFactory;
     MockPool public mockPool;
-    MockOracle public mockOracle;
+    MockOracle public mockOracle0;  // Price feed for token0
+    MockOracle public mockOracle1;  // Price feed for token1 (stablecoin)
     MockERC20 public mockToken0;
     MockERC20 public mockToken1;
 
@@ -41,7 +42,8 @@ contract LPBattleVaultTest is Test {
         mockPositionManager = new MockPositionManager();
         mockFactory = new MockFactory();
         mockPool = new MockPool();
-        mockOracle = new MockOracle();
+        mockOracle0 = new MockOracle();  // For token0 (non-stable token)
+        mockOracle1 = new MockOracle();  // For token1 (stablecoin)
         mockToken0 = new MockERC20("Token0", "TK0");
         mockToken1 = new MockERC20("Token1", "TK1");
         
@@ -54,6 +56,14 @@ contract LPBattleVaultTest is Test {
 
         // Setup mock pool
         mockFactory.setPool(token0, token1, 3000, address(mockPool));
+
+        // Setup price feeds for mock tokens
+        vault.setPriceFeed(token0, address(mockOracle0));
+        vault.setPriceFeed(token1, address(mockOracle1));
+
+        // Configure mock oracle prices
+        mockOracle0.setPrice(200000000000); // $2000.00 with 8 decimals (like ETH)
+        mockOracle1.setPrice(100000000);    // $1.00 with 8 decimals (stablecoin)
 
         // Setup stablecoins (token1 is stable for testing)
         vault.setStablecoin(token1, true);
@@ -81,8 +91,7 @@ contract LPBattleVaultTest is Test {
             1000000000000000000 // liquidity
         );
 
-        // Setup mock prices
-        mockOracle.setPrice(100000000); // $1.00
+        // Setup mock pool slot0 for price calculations
         mockPool.setSlot0(79228162514264337593543950336, 0); // sqrtPriceX96 for 1:1 ratio
 
         // Give test addresses some ETH
@@ -121,7 +130,7 @@ contract LPBattleVaultTest is Test {
     function testCreateBattleFailsIfNotOwner() public {
         vm.startPrank(opponent);
 
-        vm.expectRevert("Not LP owner");
+        vm.expectRevert(NotLPOwner.selector);
         vault.createBattle(creatorTokenId, 1 hours);
 
         vm.stopPrank();
@@ -156,7 +165,7 @@ contract LPBattleVaultTest is Test {
         uint256 battleId = vault.createBattle(creatorTokenId, 1 hours);
 
         vm.prank(creator); // Wrong owner
-        vm.expectRevert("Not LP owner");
+        vm.expectRevert(NotLPOwner.selector);
         vault.joinBattle(battleId, opponentTokenId);
     }
 
@@ -175,7 +184,7 @@ contract LPBattleVaultTest is Test {
 
         // Try to join again with different token
         vm.prank(opponent);
-        vm.expectRevert("Battle already joined");
+        vm.expectRevert(BattleAlreadyJoined.selector);
         vault.joinBattle(battleId, anotherOpponentTokenId);
     }
 
@@ -197,7 +206,7 @@ contract LPBattleVaultTest is Test {
         );
 
         vm.prank(opponent);
-        vm.expectRevert("LP value not within 5% tolerance");
+        vm.expectRevert(LPValueNotWithinTolerance.selector);
         vault.joinBattle(battleId, differentTokenId);
     }
 
@@ -309,7 +318,7 @@ contract LPBattleVaultTest is Test {
         vault.joinBattle(battleId, opponentTokenId);
 
         // Don't fast forward - battle should still be ongoing
-        vm.expectRevert("Battle not ended");
+        vm.expectRevert(BattleNotEnded.selector);
         vault.resolveBattle(battleId);
     }
 
@@ -319,7 +328,7 @@ contract LPBattleVaultTest is Test {
 
         vm.warp(block.timestamp + 2 hours);
 
-        vm.expectRevert("No opponent joined");
+        vm.expectRevert(NoOpponentJoined.selector);
         vault.resolveBattle(battleId);
     }
 
@@ -335,7 +344,7 @@ contract LPBattleVaultTest is Test {
 
         vault.resolveBattle(battleId);
 
-        vm.expectRevert("Already resolved");
+        vm.expectRevert(AlreadyResolved.selector);
         vault.resolveBattle(battleId);
     }
 
@@ -387,7 +396,7 @@ contract LPBattleVaultTest is Test {
     
     function testSetStablecoinFailsIfNotOwner() public {
         vm.prank(creator); // Not the owner
-        vm.expectRevert("Not owner");
+        vm.expectRevert(NotOwner.selector);
         vault.setStablecoin(token0, true);
     }
     
@@ -1249,13 +1258,66 @@ contract MockPool {
 
 contract MockOracle {
     int256 public price;
+    uint256 public updatedAt;
+    uint8 public decimals;
+    string public description;
+    uint256 public version;
+
+    constructor() {
+        price = 100000000; // $1.00 with 8 decimals
+        updatedAt = block.timestamp;
+        decimals = 8;
+        description = "Mock Price Feed";
+        version = 1;
+    }
 
     function setPrice(int256 _price) external {
         price = _price;
+        updatedAt = block.timestamp;
     }
 
     function latestAnswer() external view returns (int256) {
         return price;
+    }
+
+    function latestRoundData()
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt_,
+            uint80 answeredInRound
+        )
+    {
+        return (
+            1,           // roundId
+            price,       // answer
+            updatedAt,   // startedAt
+            updatedAt,   // updatedAt
+            1            // answeredInRound
+        );
+    }
+
+    function getRoundData(uint80 _roundId)
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 answer,
+            uint256 startedAt,
+            uint256 updatedAt_,
+            uint80 answeredInRound
+        )
+    {
+        return (
+            _roundId,    // roundId
+            price,       // answer
+            updatedAt,   // startedAt
+            updatedAt,   // updatedAt
+            _roundId     // answeredInRound
+        );
     }
 }
 

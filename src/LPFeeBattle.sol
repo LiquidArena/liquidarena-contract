@@ -82,7 +82,7 @@ contract LPFeeBattle is IERC721Receiver {
         address pool = factory.getPool(token0, token1, fee);
         require(pool != address(0), "Pool not found");
 
-        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+        (uint160 sqrtPriceX96,,,,,,) = IUniswapV3PoolState(pool).slot0();
 
         // Calculate token amounts from liquidity
         uint256 amount0 = uint256(liquidity) * 1e18 / uint256(sqrtPriceX96);
@@ -101,7 +101,7 @@ contract LPFeeBattle is IERC721Receiver {
         address pool = findBestPricePool(token0, token1);
         
         if (pool != address(0)) {
-            (uint160 sqrtPriceX96,,,,,,) = IUniswapV3Pool(pool).slot0();
+            (uint160 sqrtPriceX96,,,,,,) = IUniswapV3PoolState(pool).slot0();
             usdValue = calculatePoolBasedValue(token0, token1, amount0, amount1, sqrtPriceX96);
         } else {
             // Fallback: assume both tokens have equal value for relative comparison

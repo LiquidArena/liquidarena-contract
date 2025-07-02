@@ -38,7 +38,7 @@ interface IUniswapV3Factory {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
 }
 
-interface IUniswapV3Pool {
+interface IUniswapV3PoolState {
     function slot0()
         external
         view
@@ -50,5 +50,32 @@ interface IUniswapV3Pool {
             uint16 observationCardinalityNext,
             uint8 feeProtocol,
             bool unlocked
+        );
+}
+
+// Chainlink Price Feed Interface
+interface AggregatorV3Interface {
+    function decimals() external view returns (uint8);
+    function description() external view returns (string memory);
+    function version() external view returns (uint256);
+    function latestRoundData()
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 price,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
+        );
+    function getRoundData(uint80 _roundId)
+        external
+        view
+        returns (
+            uint80 roundId,
+            int256 price,
+            uint256 startedAt,
+            uint256 updatedAt,
+            uint80 answeredInRound
         );
 }

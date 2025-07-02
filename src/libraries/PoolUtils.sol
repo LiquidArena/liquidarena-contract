@@ -36,7 +36,7 @@ library PoolUtils {
         poolData.pool = factory.getPool(token0, token1, fee);
         
         if (poolData.pool != address(0)) {
-            (, poolData.currentTick,,,,,) = IUniswapV3Pool(poolData.pool).slot0();
+            (, poolData.currentTick,,,,,) = IUniswapV3PoolState(poolData.pool).slot0();
         }
     }
     
