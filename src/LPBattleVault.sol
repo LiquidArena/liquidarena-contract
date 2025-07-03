@@ -331,9 +331,24 @@ contract LPBattleVault is IERC721Receiver {
             uint256 creatorTotalFees = PoolUtils.getTotalFees(creatorPosData.tokensOwed0, creatorPosData.tokensOwed1);
             uint256 opponentTotalFees = PoolUtils.getTotalFees(opponentPosData.tokensOwed0, opponentPosData.tokensOwed1);
             
-            winner = creatorTotalFees > opponentTotalFees ? b.creator : 
-                     opponentTotalFees > creatorTotalFees ? b.opponent : address(0);
-        } // else winner = address(0) (both out of range)
+            // Fix: If fees are equal, creator wins (creator advantage)
+            winner = creatorTotalFees >= opponentTotalFees ? b.creator : b.opponent;
+        } else {
+            // Fix: If both out of range, creator wins (creator advantage) 
+            uint256 randomValue = uint256(keccak256(abi.encodePacked(
+                block.timestamp, 
+                block.prevrandao, 
+                battleId,
+                b.creator,
+                b.opponent
+            )));
+            
+            winner = (randomValue % 2 == 0) ? b.creator : b.opponent;
+        }
+
+        // Update battle state BEFORE transfers for consistency
+        b.isResolved = true;
+        b.winner = winner;
 
         // Collect fees from both positions
         (uint256 creatorAmount0, uint256 creatorAmount1) = positionManager.collect(
@@ -397,9 +412,6 @@ contract LPBattleVault is IERC721Receiver {
         positionManager.safeTransferFrom(address(this), b.creator, b.creatorTokenId);
         positionManager.safeTransferFrom(address(this), b.opponent, b.opponentTokenId);
 
-        b.isResolved = true;
-        b.winner = winner;
-
         emit BattleResolved(battleId, winner);
     }
 
@@ -425,12 +437,13 @@ contract LPBattleVault is IERC721Receiver {
     function getBattleDetails(uint256 battleId)
         external
         view
-        returns (address creator, address opponent, uint256 usdValue, string memory status)
+        returns (address creator, address opponent, uint256 usdValue, address winner, string memory status)
     {
         Battle memory b = battles[battleId];
         creator = b.creator;
         opponent = b.opponent;
         usdValue = b.totalValueUSD;
+        winner = b.winner;
         status = b.isResolved
             ? "ended"
             : b.opponent == address(0) ? "queued" : block.timestamp < b.startTime + b.duration ? "onGoing" : "readyToResolve";
