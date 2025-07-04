@@ -24,7 +24,7 @@ contract LPFeeBattle is IERC721Receiver, ReentrancyGuard, Pausable {
 
     // Chainlink Price Feeds (Monad Testnet)
     mapping(address => address) public priceFeeds;
-    uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
+    uint256 public constant PRICE_STALENESS_THRESHOLD = 18000; // 5 hours
 
     struct Battle {
         address creator;
@@ -234,9 +234,9 @@ contract LPFeeBattle is IERC721Receiver, ReentrancyGuard, Pausable {
         if (positionManager.ownerOf(tokenId) != msg.sender) {
             revert NotLPOwner();
         }
-        if (duration < MIN_BATTLE_DURATION) {
-            revert BattleDurationTooShort(duration, MIN_BATTLE_DURATION);
-        }
+        // if (duration < MIN_BATTLE_DURATION) {
+        //     revert BattleDurationTooShort(duration, MIN_BATTLE_DURATION);
+        // }
         positionManager.safeTransferFrom(msg.sender, address(this), tokenId);
 
         (,,,,,,,,,, uint128 owed0, uint128 owed1) = positionManager.positions(tokenId);

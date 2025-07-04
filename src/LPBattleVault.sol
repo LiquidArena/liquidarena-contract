@@ -25,7 +25,7 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
 
     // Chainlink Price Feeds (Monad Testnet)
     mapping(address => address) public priceFeeds;
-    uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
+    uint256 public constant PRICE_STALENESS_THRESHOLD = 18000; // 5 hours
 
     // Tambahkan cache untuk decimal token
     mapping(address => uint8) private tokenDecimals;
@@ -53,10 +53,10 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
 
     // Constants
     uint256 public constant RESOLVER_REWARD_BPS = 100; // 1% in basis points
-    uint256 public constant MIN_BATTLE_DURATION = 1 hours; // Minimum battle duration
+    uint256 public constant MIN_BATTLE_DURATION = 5 minutes; // Minimum battle duration
     uint256 public constant MAX_BATTLE_DURATION = 7 days; // Maximum battle duration
     uint256 public constant LP_VALUE_TOLERANCE_BPS = 500; // 5% tolerance in basis points
-    uint256 public constant MAX_PRICE_STALENESS = 3600; // 1 hour maximum price staleness
+    uint256 public constant MAX_PRICE_STALENESS = 18000; // 5 hours maximum price staleness
 
     // Events
     event BattleCreated(
@@ -367,9 +367,9 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         returns (uint256)
     {
         // Input validation
-        if (durations < MIN_BATTLE_DURATION) {
-            revert BattleDurationTooShort(durations, MIN_BATTLE_DURATION);
-        }
+        // if (durations < MIN_BATTLE_DURATION) {
+        //     revert BattleDurationTooShort(durations, MIN_BATTLE_DURATION);
+        // }
         if (durations > MAX_BATTLE_DURATION) {
             revert BattleDurationTooLong(durations, MAX_BATTLE_DURATION);
         }
