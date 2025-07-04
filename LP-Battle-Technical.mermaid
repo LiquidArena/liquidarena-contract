@@ -1,0 +1,85 @@
+```mermaid
+sequenceDiagram
+    participant A as 👤 Player A
+    participant B as 👤 Player B
+    participant C as 📋 LPBattleVault Contract
+    participant P as 📊 Chainlink Price Feeds
+    participant U as 🦄 Uniswap V3 Position Manager
+    participant R as 🔧 Resolver (Anyone)
+
+    Note over A,R: 🎮 LP Battle Vault - Technical Flow
+
+    %% Phase 1: Create Battle
+    rect rgb(230, 244, 255)
+        Note over A,C: Phase 1: Create Battle
+        A->>U: ownerOf(tokenId) - Verify ownership
+        U-->>A: ✅ Owner confirmed
+        A->>U: approve(battleContract, tokenId)
+        A->>C: createBattle(tokenId, duration)
+        C->>P: Check price feeds for USD valuation
+        P-->>C: ✅ Fresh prices returned
+        C->>U: safeTransferFrom(playerA, contract, tokenId)
+        C-->>A: ✅ Battle created (battleId: 1)
+        Note over C: Battle Status: "queued"
+    end
+
+    %% Phase 2: Join Battle
+    rect rgb(240, 248, 235)
+        Note over B,C: Phase 2: Join Battle
+        B->>C: canJoinBattle(battleId, tokenId)
+        C->>P: Check price feeds for both tokens
+        P-->>C: ✅ Fresh prices returned
+        C->>C: Calculate USD values & check ±5% tolerance
+        C-->>B: ✅ Can join battle
+        B->>U: approve(battleContract, tokenId)
+        B->>C: joinBattle(battleId, tokenId)
+        C->>U: safeTransferFrom(playerB, contract, tokenId)
+        C-->>B: ✅ Battle joined
+        Note over C: Battle Status: "onGoing"<br/>Timer: Started
+    end
+
+    %% Phase 3: Battle Period
+    rect rgb(255, 248, 225)
+        Note over A,R: Phase 3: Battle Period (Automatic)
+        loop During Battle Duration
+            Note over C: 📊 Real-time Tracking
+            C->>U: positions(tokenId) - Get position data
+            C->>C: Check if positions are "in range"
+            C->>C: Calculate accumulated fees
+            Note over C: Update current leader
+        end
+        Note over C: ⏰ Time expires<br/>Status: "readyToResolve"
+    end
+
+    %% Phase 4: Resolution
+    rect rgb(248, 231, 255)
+        Note over R,C: Phase 4: Battle Resolution
+        R->>C: resolveBattle(battleId)
+        C->>C: Verify time has expired
+        C->>U: Get final position data for both tokens
+        C->>C: Determine winner based on:<br/>1. In-range status<br/>2. Fee comparison<br/>3. Tie-breaking rules
+        
+        alt Both In Range
+            C->>C: Compare fees → Higher fees wins
+        else Only One In Range
+            C->>C: In-range player wins
+        else Both Out of Range
+            C->>C: Random selection
+        end
+
+        C->>U: collect() fees from both positions
+        C->>C: Calculate resolver reward (1%)
+        C->>C: Distribute remaining fees to winner
+        C->>U: safeTransferFrom() - Return NFTs to owners
+        C-->>R: ✅ Battle resolved
+        Note over C: Battle Status: "ended"<br/>Winner: Determined
+    end
+
+    %% Final State
+    rect rgb(232, 245, 233)
+        Note over A,R: 🎉 Battle Complete
+        Note over A: Receives NFT back
+        Note over B: Receives NFT back
+        Note over C: Winner receives all fees<br/>Resolver receives 1% reward
+    end
+```

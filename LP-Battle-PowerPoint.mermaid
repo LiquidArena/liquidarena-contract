@@ -1,0 +1,25 @@
+```mermaid
+flowchart LR
+    A[👤 Player A<br/>🎮 Create Battle<br/>📱 Stake LP NFT] --> B[⏳ Waiting<br/>for Opponent]
+    
+    B --> C[👤 Player B<br/>⚔️ Join Battle<br/>📱 Stake LP NFT]
+    
+    C --> D[🎯 Battle Active<br/>⏰ Timer: 1 Hour<br/>📊 Track Performance]
+    
+    D --> E{🏆 Who Wins?<br/><br/>🎯 In Range?<br/>💰 More Fees?}
+    
+    E --> F[🎉 Winner Gets<br/>💰 All Fees<br/>📤 NFTs Returned]
+
+    %% Styling for PowerPoint
+    classDef playerA fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,color:#000
+    classDef playerB fill:#f3e5f5,stroke:#7b1fa2,stroke-width:3px,color:#000
+    classDef battle fill:#fff8e1,stroke:#f57c00,stroke-width:3px,color:#000
+    classDef decision fill:#e8f5e8,stroke:#388e3c,stroke-width:3px,color:#000
+    classDef reward fill:#fce4ec,stroke:#c2185b,stroke-width:3px,color:#000
+    
+    class A playerA
+    class B,C playerB
+    class D battle
+    class E decision
+    class F reward
+```

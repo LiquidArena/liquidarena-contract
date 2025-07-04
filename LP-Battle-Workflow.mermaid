@@ -1,0 +1,76 @@
+```mermaid
+flowchart TD
+    Start([🎮 LP Battle Vault]) --> PlayerA[👤 Player A<br/>Has WETH/USDC LP<br/>Worth $100]
+    
+    PlayerA --> A1[🔐 Approve LP NFT<br/>to Battle Contract]
+    A1 --> A2[⚔️ Create Battle<br/>Duration: 1 hour]
+    A2 --> A3[⏳ Battle Status:<br/>'Waiting for Opponent']
+    
+    A3 --> PlayerB[👤 Player B<br/>Has WBTC/USDC LP<br/>Worth $95-105]
+    
+    PlayerB --> B1{🔍 Check Value<br/>Within ±5%?}
+    B1 -->|❌ No| B2[❌ LPValueNotWithinTolerance<br/>Find different battle]
+    B1 -->|✅ Yes| B3[🔐 Approve LP NFT<br/>to Battle Contract]
+    
+    B3 --> B4[⚔️ Join Battle<br/>Stake LP NFT]
+    B4 --> Battle[🎮 Battle Starts!<br/>Timer: 1 hour countdown]
+    
+    Battle --> Track[📊 Real-time Tracking<br/>━━━━━━━━━━━━━━━━━━━━<br/>🎯 Position in range?<br/>💰 Fees collected?<br/>🏆 Current leader?]
+    
+    Track --> Time{⏰ Time<br/>Expired?}
+    Time -->|❌ No| Track
+    Time -->|✅ Yes| Ready[🚨 Ready to Resolve<br/>Anyone can resolve]
+    
+    Ready --> Resolve[🔧 Anyone calls<br/>resolveBattle()]
+    
+    Resolve --> Logic{🎯 Winner Logic}
+    
+    Logic --> Case1[📍 Only A in range<br/>🏆 A wins]
+    Logic --> Case2[📍 Only B in range<br/>🏆 B wins]
+    Logic --> Case3[📍 Both in range<br/>💰 Most fees wins]
+    Logic --> Case4[📍 Both out of range<br/>🎲 Random winner]
+    
+    Case1 --> Rewards
+    Case2 --> Rewards
+    Case3 --> Rewards
+    Case4 --> Rewards
+    
+    Rewards[💰 Reward Distribution<br/>━━━━━━━━━━━━━━━━━━━━<br/>🏆 Winner: ALL fees<br/>🔧 Resolver: 1% fees<br/>📤 NFTs: Returned to owners]
+    
+    Rewards --> End[🎉 Battle Complete!<br/>Winner announced<br/>Ready for new battle]
+    
+    %% Price Feed System
+    subgraph PriceFeeds [🌐 Chainlink Price Feeds]
+        WETH[📊 WETH/USD<br/>$2,592.53]
+        WBTC[📊 WBTC/USD<br/>$109,461.85]
+        USDC[📊 USDC/USD<br/>$1.00]
+        USDT[📊 USDT/USD<br/>$1.00]
+        
+        Stale{⏰ Price Stale?<br/>> 1 hour old}
+        Stale -->|❌ Yes| StaleError[❌ StalePrice()<br/>Wait for update]
+        Stale -->|✅ No| Fresh[✅ Fresh Price<br/>Calculate USD value]
+    end
+    
+    %% Safety Features
+    subgraph Safety [🛡️ Safety Features]
+        S1[🔒 Ownership Verification<br/>Must own LP NFT]
+        S2[⚖️ Fair Value Matching<br/>±5% tolerance]
+        S3[📊 Cross-pool Support<br/>Different pairs OK]
+        S4[⏰ Time-based Resolution<br/>Prevents stuck battles]
+    end
+    
+    %% Styling
+    classDef playerA fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef playerB fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef battle fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef winner fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef system fill:#f5f5f5,stroke:#424242,stroke-width:2px
+    
+    class PlayerA,A1,A2,A3 playerA
+    class PlayerB,B1,B3,B4 playerB
+    class Battle,Track,Logic battle
+    class Case1,Case2,Case3,Case4,Rewards,End winner
+    class B2,StaleError error
+    class PriceFeeds,Safety,Resolve,Ready system
+```

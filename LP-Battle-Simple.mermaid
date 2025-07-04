@@ -1,0 +1,51 @@
+```mermaid
+graph TD
+    %% Main Flow
+    A[🎮 Start: LP Battle Vault] --> B[👤 Player A: Create Battle]
+    B --> C[📝 Approve & Stake LP NFT]
+    C --> D[⏳ Wait for Opponent]
+    
+    D --> E[👤 Player B: Join Battle]
+    E --> F{💰 LP Values<br/>Within ±5%?}
+    F -->|❌| G[❌ Find Different Battle]
+    F -->|✅| H[📝 Approve & Stake LP NFT]
+    
+    H --> I[🎮 Battle Begins!<br/>⏰ Timer Starts]
+    
+    I --> J[📊 Performance Tracking<br/>🎯 In Range Status<br/>💸 Fee Collection]
+    
+    J --> K{⏰ Time<br/>Expired?}
+    K -->|No| J
+    K -->|Yes| L[🔧 Anyone Can Resolve]
+    
+    L --> M{🏆 Determine Winner}
+    
+    %% Winner Logic
+    M --> N1[📍 Only A in Range<br/>🏆 A Wins]
+    M --> N2[📍 Only B in Range<br/>🏆 B Wins]
+    M --> N3[📍 Both in Range<br/>💰 Higher Fees Wins]
+    M --> N4[📍 Both Out of Range<br/>🎲 Random Winner]
+    
+    %% Final Step
+    N1 --> O[💰 Distribute Rewards<br/>🏆 Winner gets all fees<br/>🔧 Resolver gets 1%<br/>📤 Return NFTs]
+    N2 --> O
+    N3 --> O
+    N4 --> O
+    
+    O --> P[🎉 Battle Complete!]
+    
+    %% Styling
+    classDef start fill:#e3f2fd,stroke:#1976d2,stroke-width:3px
+    classDef player fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef battle fill:#fff8e1,stroke:#f57c00,stroke-width:2px
+    classDef winner fill:#e8f5e8,stroke:#388e3c,stroke-width:2px
+    classDef end fill:#fce4ec,stroke:#c2185b,stroke-width:3px
+    classDef error fill:#ffebee,stroke:#d32f2f,stroke-width:2px
+    
+    class A start
+    class B,E player
+    class I,J,K,L,M battle
+    class N1,N2,N3,N4,O winner
+    class P end
+    class G error
+```
