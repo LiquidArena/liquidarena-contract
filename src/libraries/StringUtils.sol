@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 library StringUtils {
     /**
@@ -24,7 +24,7 @@ library StringUtils {
         }
         str = string(bstr);
     }
-    
+
     /**
      * @dev Helper function to format USD values with decimal places
      * @param raw The raw USD value (with 8 decimal places)
@@ -44,7 +44,7 @@ library StringUtils {
             )
         );
     }
-    
+
     function _uint2str(uint256 _i) internal pure returns (string memory str) {
         if (_i == 0) return "0";
         uint256 j = _i;

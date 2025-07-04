@@ -1,6 +1,44 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
+// Shared Errors //
+error NotOwner();
+error NotLPOwner();
+error InvalidOwner();
+error PoolNotFound();
+error BattleAlreadyJoined();
+error AlreadyResolved();
+error BattleAlreadyResolved();
+error BattleNotEnded();
+error BattleNotStarted();
+error LPValueNotWithinTolerance();
+error NoOpponentJoined();
+error InvalidCreatorPool();
+error InvalidOpponentPool();
+error BattleDoesNotExist();
+error PriceFeedNotSet();
+error StalePrice();
+
+// Additional comprehensive errors
+error BattleDurationTooShort(uint256 provided, uint256 minimum);
+error BattleDurationTooLong(uint256 provided, uint256 maximum);
+error PriceTooStale(uint256 age, uint256 threshold);
+error InsufficientLPValue(uint256 provided, uint256 required);
+error InvalidTokenId(uint256 tokenId);
+error ZeroAddress();
+error InvalidBattleId(uint256 battleId);
+error BattleExpired(uint256 battleId, uint256 expiredAt);
+error UnauthorizedResolver(address caller);
+error InvalidPriceFeed(address token, address priceFeed);
+error TokenNotSupported(address token);
+error InvalidFeeAmount(uint256 amount);
+error ContractPaused();
+error InsufficientBalance(address token, uint256 required, uint256 available);
+error BattleNotExpiredForEmergencyWithdrawal();
+
+// UNISWAP INTERFACES //
+
+// Uniswap Non-Fungible Position Manager Interface
 interface INonfungiblePositionManager {
     struct CollectParams {
         uint256 tokenId;
@@ -34,10 +72,12 @@ interface INonfungiblePositionManager {
     function collect(CollectParams calldata params) external returns (uint256 amount0, uint256 amount1);
 }
 
+// Uniswap V3 Pool State Interface
 interface IUniswapV3Factory {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address);
 }
 
+// Uniswap V3 Pool State Interface
 interface IUniswapV3PoolState {
     function slot0()
         external

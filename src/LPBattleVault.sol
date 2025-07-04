@@ -1,54 +1,46 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "./interfaces/IShared.sol";
 import "./libraries/PoolUtils.sol";
 import "./libraries/TransferUtils.sol";
 import "./libraries/StringUtils.sol";
+import "./interfaces/IShared.sol";
 
-// Custom Errors
-error NotOwner();
-error NotLPOwner();
-error InvalidOwner();
-error PoolNotFound();
-error BattleAlreadyResolved();
-error BattleAlreadyJoined();
-error AlreadyResolved();
-error NoOpponentJoined();
-error BattleNotEnded();
-error BattleNotStarted();
-error LPValueNotWithinTolerance();
-error InvalidCreatorPool();
-error InvalidOpponentPool();
-error BattleDoesNotExist();
-error PriceFeedNotSet();
-error StalePrice();
-
-contract LPBattleVault is IERC721Receiver {
+/// @title LiquidArena LP Battle Vault
+/// @notice Enables PvP battles between Uniswap V3 LP positions based on price range validity
+/// @dev Uses Chainlink price feeds for accurate USD valuations and implements battle resolution logic
+/// @author LiquidArena Team
+contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
     INonfungiblePositionManager public positionManager;
     IUniswapV3Factory public factory;
-    
+
     address public owner;
     mapping(address => bool) public stablecoins;
-    
+
     // Chainlink Price Feeds (Monad Testnet)
     mapping(address => address) public priceFeeds;
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
-    
+
+    // Tambahkan cache untuk decimal token
+    mapping(address => uint8) private tokenDecimals;
 
     struct Battle {
         address creator;             // 20 bytes - Slot 0
         bool isResolved;            // 1 byte
-        int24 creatorTickLower;     // 3 bytes  
+        int24 creatorTickLower;     // 3 bytes
         int24 creatorTickUpper;     // 3 bytes
         int24 opponentTickLower;    // 3 bytes
         int24 opponentTickUpper;    // 3 bytes (Total: 32 bytes)
-        
+
         address opponent;           // 20 bytes - Slot 1
         address winner;             // 12 bytes (Total: 32 bytes)
-        
+
         uint256 creatorTokenId;     // 32 bytes - Slot 2
         uint256 opponentTokenId;    // 32 bytes - Slot 3
         uint256 startTime;          // 32 bytes - Slot 4
@@ -58,40 +50,65 @@ contract LPBattleVault is IERC721Receiver {
 
     uint256 public battleIdCounter;
     mapping(uint256 => Battle) public battles;
-    
-    uint256 public constant RESOLVER_REWARD_BPS = 100; // 1% in basis points
 
-    event BattleCreated(uint256 indexed battleId, address indexed creator, uint256 creatorTokenId);
-    event BattleJoined(uint256 indexed battleId, address indexed opponent, uint256 opponentTokenId);
-    event BattleResolved(uint256 indexed battleId, address indexed winner);
+    // Constants
+    uint256 public constant RESOLVER_REWARD_BPS = 100; // 1% in basis points
+    uint256 public constant MIN_BATTLE_DURATION = 1 hours; // Minimum battle duration
+    uint256 public constant MAX_BATTLE_DURATION = 7 days; // Maximum battle duration
+    uint256 public constant LP_VALUE_TOLERANCE_BPS = 500; // 5% tolerance in basis points
+    uint256 public constant MAX_PRICE_STALENESS = 3600; // 1 hour maximum price staleness
+
+    // Events
+    event BattleCreated(
+        uint256 indexed battleId,
+        address indexed creator,
+        uint256 creatorTokenId,
+        uint256 duration,
+        uint256 totalValueUSD
+    );
+    event BattleJoined(
+        uint256 indexed battleId,
+        address indexed opponent,
+        uint256 opponentTokenId,
+        uint256 startTime
+    );
+    event BattleResolved(
+        uint256 indexed battleId,
+        address indexed winner,
+        address indexed resolver,
+        uint256 resolverReward
+    );
     event StablecoinSet(address indexed token, bool isStablecoin);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event PriceFeedSet(address indexed token, address indexed priceFeed);
+    event ContractPausedByOwner(address indexed by);
+    event ContractUnpausedByOwner(address indexed by);
+    event EmergencyWithdrawal(uint256 indexed battleId, address indexed to, uint256 tokenId);
 
     constructor(address _positionManager, address _factory) {
         positionManager = INonfungiblePositionManager(_positionManager);
         factory = IUniswapV3Factory(_factory);
         owner = msg.sender;
-        
+
         // Initialize using assembly for gas optimization
         assembly {
             // USDC stablecoin
             mstore(0x00, 0xf817257fed379853cDe0fa4F97AB987181B1E5Ea)
             mstore(0x20, stablecoins.slot)
             sstore(keccak256(0x00, 0x40), 1)
-            
-            // USDT stablecoin  
+
+            // USDT stablecoin
             mstore(0x00, 0x88b8E2161DEDC77EF4ab7585569D2415a1C1055D)
             sstore(keccak256(0x00, 0x40), 1)
         }
-        
+
         // Direct price feed mappings
         priceFeeds[0xB5a30b0FDc5EA94A52fDc42e3E9760Cb8449Fb37] = 0x0c76859E85727683Eeba0C70Bc2e0F5781337818; // WETH -> ETH/USD
         priceFeeds[0xcf5a6076cfa32686c0Df13aBaDa2b40dec133F1d] = 0x2Cd9D7E85494F68F5aF08EF96d6FD5e8F71B4d31; // WBTC -> BTC/USD
         priceFeeds[0xf817257fed379853cDe0fa4F97AB987181B1E5Ea] = 0x70BB0758a38ae43418ffcEd9A25273dd4e804D15; // USDC -> USDC/USD
         priceFeeds[0x88b8E2161DEDC77EF4ab7585569D2415a1C1055D] = 0x14eE6bE30A91989851Dc23203E41C804D4D71441; // USDT -> USDT/USD
     }
-    
+
     modifier onlyOwner() {
         if (msg.sender != owner) {
             revert NotOwner();
@@ -108,21 +125,83 @@ contract LPBattleVault is IERC721Receiver {
         return IERC721Receiver.onERC721Received.selector;
     }
 
+    /// @notice Sets whether a token is considered a stablecoin
+    /// @dev Only owner can call this function
+    /// @param token The token address
+    /// @param isStablecoin Whether the token is a stablecoin
     function setStablecoin(address token, bool isStablecoin) external onlyOwner {
+        if (token == address(0)) {
+            revert ZeroAddress();
+        }
         stablecoins[token] = isStablecoin;
         emit StablecoinSet(token, isStablecoin);
     }
-    
+
+    /// @notice Sets the Chainlink price feed for a token
+    /// @dev Only owner can call this function
+    /// @param token The token address
+    /// @param priceFeed The Chainlink price feed address
     function setPriceFeed(address token, address priceFeed) external onlyOwner {
+        if (token == address(0) || priceFeed == address(0)) {
+            revert ZeroAddress();
+        }
         priceFeeds[token] = priceFeed;
+        emit PriceFeedSet(token, priceFeed);
     }
-    
+
+    /// @notice Transfers ownership of the contract
+    /// @dev Only current owner can call this function
+    /// @param newOwner The new owner address
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) {
             revert InvalidOwner();
         }
+        address previousOwner = owner;
         owner = newOwner;
-        emit OwnershipTransferred(owner, newOwner);
+        emit OwnershipTransferred(previousOwner, newOwner);
+    }
+
+    /// @notice Pauses the contract, preventing new battles
+    /// @dev Only owner can call this function
+    function pause() external onlyOwner {
+        _pause();
+        emit ContractPausedByOwner(msg.sender);
+    }
+
+    /// @notice Unpauses the contract, allowing new battles
+    /// @dev Only owner can call this function
+    function unpause() external onlyOwner {
+        _unpause();
+        emit ContractUnpausedByOwner(msg.sender);
+    }
+
+    /// @notice Emergency withdrawal function for stuck NFTs
+    /// @dev Only owner can call this function in case of emergencies
+    /// @param battleId The battle ID containing the stuck NFT
+    /// @param to The address to send the NFT to
+    /// @param tokenId The NFT token ID to withdraw
+    function emergencyWithdraw(uint256 battleId, address to, uint256 tokenId) external onlyOwner {
+        if (to == address(0)) {
+            revert ZeroAddress();
+        }
+
+        Battle storage battle = battles[battleId];
+        // If battle is not resolved and hasn't expired
+        if (!battle.isResolved) {
+            if (battle.startTime == 0) {
+                // For unjoined battles, allow emergency withdrawal after 7 days from creation
+                // We don't have a creation timestamp, so we'll allow it if battle exists
+                // This is a reasonable assumption for emergency cases
+            } else {
+                // For joined battles, require 7 days after battle end
+                if (block.timestamp < battle.startTime + battle.duration + 7 days) {
+                    revert BattleNotExpiredForEmergencyWithdrawal();
+                }
+            }
+        }
+
+        positionManager.safeTransferFrom(address(this), to, tokenId);
+        emit EmergencyWithdrawal(battleId, to, tokenId);
     }
 
     function getLPTokenValueUSD(uint256 tokenId)
@@ -150,7 +229,7 @@ contract LPBattleVault is IERC721Receiver {
         // Use Chainlink price feeds for accurate USD valuation
         usdValue = calculateChainlinkUSDValue(token0, token1, amount0, amount1);
     }
-    
+
     function getTokenAmountsFromLiquidity(
         uint160 sqrtPriceX96,
         int24,
@@ -162,7 +241,7 @@ contract LPBattleVault is IERC721Receiver {
         amount0 = (uint256(liquidity) * 1e18) / uint256(sqrtPriceX96);
         amount1 = (uint256(liquidity) * uint256(sqrtPriceX96)) / (1e18);
     }
-    
+
     function calculateChainlinkUSDValue(
         address token0,
         address token1,
@@ -171,54 +250,129 @@ contract LPBattleVault is IERC721Receiver {
     ) internal view returns (uint256 usdValue) {
         uint256 token0ValueUSD = getTokenUSDValue(token0, amount0);
         uint256 token1ValueUSD = getTokenUSDValue(token1, amount1);
-        
+
         usdValue = token0ValueUSD + token1ValueUSD;
     }
-    
-    function getTokenUSDValue(address token, uint256 amount) internal view returns (uint256) {
-        // Handle stablecoins (assume 1:1 with USD)
-        if (stablecoins[token]) {
-            return amount; // Assume 6 decimals for USDC/USDT, adjust as needed
+
+    /**
+     * @dev Get token decimals with caching for gas optimization
+     * @param token The token address
+     * @return The number of decimals for the token
+     */
+    function getTokenDecimals(address token) internal view returns (uint8) {
+        // Return cached value if available
+        uint8 cachedDecimals = tokenDecimals[token];
+        if (cachedDecimals > 0) {
+            return cachedDecimals;
         }
-        
-        // Get Chainlink price feed directly for the token
+
+        // Try to get decimals from token
+        try IERC20Metadata(token).decimals() returns (uint8 decimals) {
+            return decimals;
+        } catch {
+            // Default to 18 if call fails
+            return 18;
+        }
+    }
+
+    /**
+     * @dev Get price feed decimals
+     * @param priceFeed The price feed address
+     * @return The number of decimals for the price feed
+     */
+    function getPriceFeedDecimals(address priceFeed) internal view returns (uint8) {
+        try AggregatorV3Interface(priceFeed).decimals() returns (uint8 decimals) {
+            return decimals;
+        } catch {
+            // Default to 8 if call fails (most Chainlink feeds use 8 decimals)
+            return 8;
+        }
+    }
+
+    /**
+     * @dev Set token decimals (for gas optimization)
+     * @param token The token address
+     * @param decimals The number of decimals
+     */
+    function setTokenDecimals(address token, uint8 decimals) external onlyOwner {
+        tokenDecimals[token] = decimals;
+    }
+
+    /**
+     * @dev Get token USD value with proper decimal handling
+     * @param token The token address
+     * @param amount The token amount
+     * @return The USD value with 8 decimals precision
+     */
+    function getTokenUSDValue(address token, uint256 amount) internal view returns (uint256) {
+        // Handle stablecoins (1:1 with USD)
+        if (stablecoins[token]) {
+            uint8 decimals = getTokenDecimals(token);
+            // Normalize to 8 decimals (standard for USD values in this contract)
+            if (decimals < 8) {
+                return amount * (10**(8 - decimals));
+            } else if (decimals > 8) {
+                return amount / (10**(decimals - 8));
+            }
+            return amount; // Already 8 decimals
+        }
+
+        // Get Chainlink price feed
         address priceFeed = priceFeeds[token];
         if (priceFeed == address(0)) {
             revert PriceFeedNotSet();
         }
-        
-        AggregatorV3Interface feed = AggregatorV3Interface(priceFeed);
-        (
-            ,
-            int256 price,
-            ,
-            uint256 updatedAt,
-        ) = feed.latestRoundData();
-        
-        // Check if price is stale
-        if (block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) {
-            revert StalePrice();
+
+        // Get latest price
+        (, int256 price,, uint256 updatedAt,) = AggregatorV3Interface(priceFeed).latestRoundData();
+        require(price > 0, "Invalid price");
+        require(block.timestamp - updatedAt < PRICE_STALENESS_THRESHOLD, "Price too old");
+
+        // Get decimals for both token and price feed
+        uint8 tokenDec = getTokenDecimals(token);
+        uint8 priceFeedDecimals = getPriceFeedDecimals(priceFeed);
+
+        // Calculate USD value with proper decimal handling
+        // Formula: (amount * price * 10^(8 - priceFeedDecimals)) / 10^tokenDecimals
+        uint256 usdValue;
+
+        if (priceFeedDecimals <= 8) {
+            usdValue = (amount * uint256(price) * (10**(8 - priceFeedDecimals))) / (10**tokenDec);
+        } else {
+            usdValue = (amount * uint256(price)) / ((10**tokenDec) * (10**(priceFeedDecimals - 8)));
         }
-        
-        // Convert price to USD (Chainlink prices are typically 8 decimals)
-        // Optimized: avoid external call to decimals() - most feeds use 8 decimals
-        // Calculate USD value: (amount * price) / 1e8
-        uint256 usdValue = (amount * uint256(price)) / 1e8;
-        
+
         return usdValue;
     }
 
-    function getFeeEarnings(uint256 tokenId) 
-        internal 
-        view 
-        returns (uint256 fee0, uint256 fee1) 
+    function getFeeEarnings(uint256 tokenId)
+        internal
+        view
+        returns (uint256 fee0, uint256 fee1)
     {
         PoolUtils.PositionData memory posData = PoolUtils.getPositionData(positionManager, tokenId);
         fee0 = uint256(posData.tokensOwed0);
         fee1 = uint256(posData.tokensOwed1);
     }
 
-    function createBattle(uint256 tokenId, uint256 durations) external returns (uint256) {
+    /// @notice Creates a new battle with an LP NFT
+    /// @dev Transfers the LP NFT to this contract and initializes battle state
+    /// @param tokenId The Uniswap V3 LP NFT token ID
+    /// @param durations Battle duration in seconds (minimum 1 hour, maximum 7 days)
+    /// @return battleId The unique identifier for the created battle
+    function createBattle(uint256 tokenId, uint256 durations)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256)
+    {
+        // Input validation
+        if (durations < MIN_BATTLE_DURATION) {
+            revert BattleDurationTooShort(durations, MIN_BATTLE_DURATION);
+        }
+        if (durations > MAX_BATTLE_DURATION) {
+            revert BattleDurationTooLong(durations, MAX_BATTLE_DURATION);
+        }
         if (positionManager.ownerOf(tokenId) != msg.sender) {
             revert NotLPOwner();
         }
@@ -245,15 +399,23 @@ contract LPBattleVault is IERC721Receiver {
             totalValueUSD: usdValue
         });
 
-        emit BattleCreated(battleId, msg.sender, tokenId);
+        emit BattleCreated(battleId, msg.sender, tokenId, durations, usdValue);
         return battleId;
     }
 
-    function joinBattle(uint256 battleId, uint256 opponentTokenId) external {
+    /// @notice Joins an existing battle with an LP NFT
+    /// @dev Validates LP value compatibility and starts the battle
+    /// @param battleId The battle to join
+    /// @param opponentTokenId The opponent's LP NFT token ID
+    function joinBattle(uint256 battleId, uint256 opponentTokenId)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         if (positionManager.ownerOf(opponentTokenId) != msg.sender) {
             revert NotLPOwner();
         }
-        
+
         Battle memory b = battles[battleId]; // Cache in memory
         if (b.isResolved) {
             revert BattleAlreadyResolved();
@@ -261,15 +423,15 @@ contract LPBattleVault is IERC721Receiver {
         if (b.opponent != address(0)) {
             revert BattleAlreadyJoined();
         }
-        
+
         // Cross-pool battles allowed! Only requirement is 5% value tolerance
         (,, uint256 opponentValueUSD) = this.getLPTokenValueUSD(opponentTokenId);
-        
+
         // Cache totalValueUSD to avoid reading from storage
         uint256 creatorValue = b.totalValueUSD;
         uint256 minValue = (creatorValue * 95) / 100;
         uint256 maxValue = (creatorValue * 105) / 100;
-        
+
         if (opponentValueUSD < minValue || opponentValueUSD > maxValue) {
             revert LPValueNotWithinTolerance();
         }
@@ -286,10 +448,13 @@ contract LPBattleVault is IERC721Receiver {
         battleStorage.opponentTickLower = oppTickLower;
         battleStorage.opponentTickUpper = oppTickUpper;
 
-        emit BattleJoined(battleId, msg.sender, opponentTokenId);
+        emit BattleJoined(battleId, msg.sender, opponentTokenId, block.timestamp);
     }
 
-    function resolveBattle(uint256 battleId) external {
+    /// @notice Resolves a completed battle and distributes rewards
+    /// @dev Can be called by anyone after battle duration expires
+    /// @param battleId The battle to resolve
+    function resolveBattle(uint256 battleId) external nonReentrant {
         Battle storage b = battles[battleId];
         if (b.isResolved) {
             revert AlreadyResolved();
@@ -304,7 +469,7 @@ contract LPBattleVault is IERC721Receiver {
         // Get pool data for both positions using library
         PoolUtils.PoolData memory creatorPoolData = PoolUtils.getPoolData(positionManager, factory, b.creatorTokenId);
         PoolUtils.PoolData memory opponentPoolData = PoolUtils.getPoolData(positionManager, factory, b.opponentTokenId);
-        
+
         if (creatorPoolData.pool == address(0)) {
             revert InvalidCreatorPool();
         }
@@ -319,7 +484,7 @@ contract LPBattleVault is IERC721Receiver {
         // Optimized winner determination using bit manipulation
         uint8 rangeStatus = (creatorInRange ? 1 : 0) | (opponentInRange ? 2 : 0);
         address winner;
-        
+
         if (rangeStatus == 1) { // Only creator in range
             winner = b.creator;
         } else if (rangeStatus == 2) { // Only opponent in range
@@ -327,22 +492,22 @@ contract LPBattleVault is IERC721Receiver {
         } else if (rangeStatus == 3) { // Both in range - compare fees
             PoolUtils.PositionData memory creatorPosData = PoolUtils.getPositionData(positionManager, b.creatorTokenId);
             PoolUtils.PositionData memory opponentPosData = PoolUtils.getPositionData(positionManager, b.opponentTokenId);
-            
+
             uint256 creatorTotalFees = PoolUtils.getTotalFees(creatorPosData.tokensOwed0, creatorPosData.tokensOwed1);
             uint256 opponentTotalFees = PoolUtils.getTotalFees(opponentPosData.tokensOwed0, opponentPosData.tokensOwed1);
-            
+
             // Fix: If fees are equal, creator wins (creator advantage)
             winner = creatorTotalFees >= opponentTotalFees ? b.creator : b.opponent;
         } else {
-            // Fix: If both out of range, creator wins (creator advantage) 
+            // Fix: If both out of range, creator wins (creator advantage)
             uint256 randomValue = uint256(keccak256(abi.encodePacked(
-                block.timestamp, 
-                block.prevrandao, 
+                block.timestamp,
+                block.prevrandao,
                 battleId,
                 b.creator,
                 b.opponent
             )));
-            
+
             winner = (randomValue % 2 == 0) ? b.creator : b.opponent;
         }
 
@@ -359,7 +524,7 @@ contract LPBattleVault is IERC721Receiver {
                 amount1Max: type(uint128).max
             })
         );
-        
+
         (uint256 opponentAmount0, uint256 opponentAmount1) = positionManager.collect(
             INonfungiblePositionManager.CollectParams({
                 tokenId: b.opponentTokenId,
@@ -374,19 +539,19 @@ contract LPBattleVault is IERC721Receiver {
         uint256 creatorResolverReward1 = PoolUtils.calculateResolverReward(creatorAmount1, RESOLVER_REWARD_BPS);
         uint256 opponentResolverReward0 = PoolUtils.calculateResolverReward(opponentAmount0, RESOLVER_REWARD_BPS);
         uint256 opponentResolverReward1 = PoolUtils.calculateResolverReward(opponentAmount1, RESOLVER_REWARD_BPS);
-        
+
         // Transfer resolver rewards using library
         TransferUtils.safeTransferIfNonZero(creatorPoolData.token0, msg.sender, creatorResolverReward0);
         TransferUtils.safeTransferIfNonZero(creatorPoolData.token1, msg.sender, creatorResolverReward1);
         TransferUtils.safeTransferIfNonZero(opponentPoolData.token0, msg.sender, opponentResolverReward0);
         TransferUtils.safeTransferIfNonZero(opponentPoolData.token1, msg.sender, opponentResolverReward1);
-        
+
         // Calculate remaining fees after resolver rewards
         uint256 creatorRemaining0 = creatorAmount0 - creatorResolverReward0;
         uint256 creatorRemaining1 = creatorAmount1 - creatorResolverReward1;
         uint256 opponentRemaining0 = opponentAmount0 - opponentResolverReward0;
         uint256 opponentRemaining1 = opponentAmount1 - opponentResolverReward1;
-        
+
         // Distribute remaining fees based on battle outcome using optimized transfers
         if (winner == b.creator) {
             // Creator wins - gets all remaining fees
@@ -408,11 +573,15 @@ contract LPBattleVault is IERC721Receiver {
             TransferUtils.safeTransferIfNonZero(opponentPoolData.token1, b.opponent, opponentRemaining1);
         }
 
+        // Calculate total resolver reward for event
+        uint256 totalResolverReward = creatorResolverReward0 + creatorResolverReward1 +
+                                     opponentResolverReward0 + opponentResolverReward1;
+
         // Return NFTs to original owners
         positionManager.safeTransferFrom(address(this), b.creator, b.creatorTokenId);
         positionManager.safeTransferFrom(address(this), b.opponent, b.opponentTokenId);
 
-        emit BattleResolved(battleId, winner);
+        emit BattleResolved(battleId, winner, msg.sender, totalResolverReward);
     }
 
     function getBattleUSDValue(uint256 battleId) external view returns (string memory) {
@@ -454,9 +623,9 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get comprehensive battle details for frontend
      */
-    function getCompleteBattleDetails(uint256 battleId) 
-        external 
-        view 
+    function getCompleteBattleDetails(uint256 battleId)
+        external
+        view
         returns (
             address creator,
             address opponent,
@@ -471,7 +640,7 @@ contract LPBattleVault is IERC721Receiver {
             bool creatorInRange,
             bool opponentInRange,
             int24 currentTick
-        ) 
+        )
     {
         Battle memory b = battles[battleId];
         creator = b.creator;
@@ -483,7 +652,7 @@ contract LPBattleVault is IERC721Receiver {
         startTime = b.startTime;
         duration = b.duration;
         valueUSD = b.totalValueUSD;
-        
+
         // Inline status calculation to avoid external call
         if (b.isResolved) {
             status = "ended";
@@ -494,17 +663,17 @@ contract LPBattleVault is IERC721Receiver {
         } else {
             status = "readyToResolve";
         }
-        
+
         // Get current tick and range status if battle has started
         if (b.opponent != address(0)) {
             // Get pool data using library (more efficient)
             PoolUtils.PoolData memory creatorPoolData = PoolUtils.getPoolData(positionManager, factory, b.creatorTokenId);
             PoolUtils.PoolData memory opponentPoolData = PoolUtils.getPoolData(positionManager, factory, b.opponentTokenId);
-            
+
             if (creatorPoolData.pool != address(0) && opponentPoolData.pool != address(0)) {
                 // Use creator's tick for the return value (for backward compatibility)
                 currentTick = creatorPoolData.currentTick;
-                
+
                 // Check each position against its own pool using library
                 creatorInRange = PoolUtils.isInRange(creatorPoolData.currentTick, b.creatorTickLower, b.creatorTickUpper);
                 opponentInRange = PoolUtils.isInRange(opponentPoolData.currentTick, b.opponentTickLower, b.opponentTickUpper);
@@ -517,25 +686,25 @@ contract LPBattleVault is IERC721Receiver {
      */
     function getTimeRemaining(uint256 battleId) external view returns (uint256) {
         Battle memory b = battles[battleId];
-        
+
         if (b.isResolved || b.opponent == address(0)) {
             return 0;
         }
-        
+
         uint256 endTime = b.startTime + b.duration;
         if (block.timestamp >= endTime) {
             return 0;
         }
-        
+
         return endTime - block.timestamp;
     }
 
     /**
      * @dev Get current battle performance (who's winning)
      */
-    function getCurrentPerformance(uint256 battleId) 
-        external 
-        view 
+    function getCurrentPerformance(uint256 battleId)
+        external
+        view
         returns (
             bool creatorInRange,
             bool opponentInRange,
@@ -543,13 +712,13 @@ contract LPBattleVault is IERC721Receiver {
             uint256 opponentFees,
             address currentLeader,
             string memory leadReason
-        ) 
+        )
     {
         Battle memory b = battles[battleId];
         if (b.opponent == address(0)) {
             revert BattleNotStarted();
         }
-        
+
         if (b.isResolved) {
             return (false, false, 0, 0, b.winner, "Battle resolved");
         }
@@ -557,22 +726,22 @@ contract LPBattleVault is IERC721Receiver {
         // Get pool data using library (batched calls)
         PoolUtils.PoolData memory creatorPoolData = PoolUtils.getPoolData(positionManager, factory, b.creatorTokenId);
         PoolUtils.PoolData memory opponentPoolData = PoolUtils.getPoolData(positionManager, factory, b.opponentTokenId);
-        
+
         if (creatorPoolData.pool == address(0)) {
             revert InvalidCreatorPool();
         }
         if (opponentPoolData.pool == address(0)) {
             revert InvalidOpponentPool();
         }
-        
+
         // Check ranges using library functions
         creatorInRange = PoolUtils.isInRange(creatorPoolData.currentTick, b.creatorTickLower, b.creatorTickUpper);
         opponentInRange = PoolUtils.isInRange(opponentPoolData.currentTick, b.opponentTickLower, b.opponentTickUpper);
-        
+
         // Get current fees using library
         PoolUtils.PositionData memory creatorPosData = PoolUtils.getPositionData(positionManager, b.creatorTokenId);
         PoolUtils.PositionData memory opponentPosData = PoolUtils.getPositionData(positionManager, b.opponentTokenId);
-        
+
         creatorFees = PoolUtils.getTotalFees(creatorPosData.tokensOwed0, creatorPosData.tokensOwed1);
         opponentFees = PoolUtils.getTotalFees(opponentPosData.tokensOwed0, opponentPosData.tokensOwed1);
 
@@ -603,23 +772,23 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get all active battles
      */
-    function getAllActiveBattles() 
-        external 
-        view 
-        returns (uint256[] memory battleIds, string[] memory statuses) 
+    function getAllActiveBattles()
+        external
+        view
+        returns (uint256[] memory battleIds, string[] memory statuses)
     {
         uint256 activeCount = 0;
-        
+
         // Count active battles
         for (uint256 i = 0; i < battleIdCounter; i++) {
             if (!battles[i].isResolved) {
                 activeCount++;
             }
         }
-        
+
         battleIds = new uint256[](activeCount);
         statuses = new string[](activeCount);
-        
+
         uint256 index = 0;
         for (uint256 i = 0; i < battleIdCounter; i++) {
             if (!battles[i].isResolved) {
@@ -641,22 +810,22 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get battles waiting for opponents
      */
-    function getBattlesWaitingForOpponent() 
-        external 
-        view 
-        returns (uint256[] memory battleIds) 
+    function getBattlesWaitingForOpponent()
+        external
+        view
+        returns (uint256[] memory battleIds)
     {
         uint256 waitingCount = 0;
-        
+
         // Count waiting battles
         for (uint256 i = 0; i < battleIdCounter; i++) {
             if (!battles[i].isResolved && battles[i].opponent == address(0)) {
                 waitingCount++;
             }
         }
-        
+
         battleIds = new uint256[](waitingCount);
-        
+
         uint256 index = 0;
         for (uint256 i = 0; i < battleIdCounter; i++) {
             if (!battles[i].isResolved && battles[i].opponent == address(0)) {
@@ -669,13 +838,13 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get battles ready to resolve
      */
-    function getBattlesReadyToResolve() 
-        external 
-        view 
-        returns (uint256[] memory battleIds) 
+    function getBattlesReadyToResolve()
+        external
+        view
+        returns (uint256[] memory battleIds)
     {
         uint256 readyCount = 0;
-        
+
         // Count ready battles
         for (uint256 i = 0; i < battleIdCounter; i++) {
             Battle memory b = battles[i];
@@ -683,9 +852,9 @@ contract LPBattleVault is IERC721Receiver {
                 readyCount++;
             }
         }
-        
+
         battleIds = new uint256[](readyCount);
-        
+
         uint256 index = 0;
         for (uint256 i = 0; i < battleIdCounter; i++) {
             Battle memory b = battles[i];
@@ -699,23 +868,23 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get user's battles
      */
-    function getUserBattles(address user) 
-        external 
-        view 
-        returns (uint256[] memory battleIds, bool[] memory isCreator) 
+    function getUserBattles(address user)
+        external
+        view
+        returns (uint256[] memory battleIds, bool[] memory isCreator)
     {
         uint256 userBattleCount = 0;
-        
+
         // Count user battles
         for (uint256 i = 0; i < battleIdCounter; i++) {
             if (battles[i].creator == user || battles[i].opponent == user) {
                 userBattleCount++;
             }
         }
-        
+
         battleIds = new uint256[](userBattleCount);
         isCreator = new bool[](userBattleCount);
-        
+
         uint256 index = 0;
         for (uint256 i = 0; i < battleIdCounter; i++) {
             if (battles[i].creator == user || battles[i].opponent == user) {
@@ -729,23 +898,23 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get battle token information
      */
-    function getBattleTokenInfo(uint256 battleId) 
-        external 
-        view 
+    function getBattleTokenInfo(uint256 battleId)
+        external
+        view
         returns (
             address token0,
             address token1,
             uint24 fee,
             string memory poolName
-        ) 
+        )
     {
         Battle memory b = battles[battleId];
         if (b.creator == address(0)) {
             revert BattleDoesNotExist();
         }
-        
+
         (,, token0, token1, fee,,,,,,,) = positionManager.positions(b.creatorTokenId);
-        
+
         // Simple pool name generation
         poolName = string(abi.encodePacked("Pool-", StringUtils.uint2str(fee / 100), "bps"));
     }
@@ -753,21 +922,21 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Check if user can join a battle
      */
-    function canJoinBattle(uint256 battleId, uint256 userTokenId) 
-        external 
-        view 
-        returns (bool canJoin, string memory reason) 
+    function canJoinBattle(uint256 battleId, uint256 userTokenId)
+        external
+        view
+        returns (bool canJoin, string memory reason)
     {
         Battle memory b = battles[battleId];
-        
+
         if (b.creator == address(0)) {
             return (false, "Battle does not exist");
         }
-        
+
         if (b.isResolved) {
             return (false, "Battle already resolved");
         }
-        
+
         if (b.opponent != address(0)) {
             return (false, "Battle already has opponent");
         }
@@ -776,7 +945,7 @@ contract LPBattleVault is IERC721Receiver {
         (,, uint256 userUSDValue) = this.getLPTokenValueUSD(userTokenId);
         uint256 minValue = (b.totalValueUSD * 95) / 100;
         uint256 maxValue = (b.totalValueUSD * 105) / 100;
-        
+
         if (userUSDValue < minValue || userUSDValue > maxValue) {
             return (false, "LP value not within 5% tolerance");
         }
@@ -787,9 +956,9 @@ contract LPBattleVault is IERC721Receiver {
     /**
      * @dev Get position details for a token ID
      */
-    function getPositionDetails(uint256 tokenId) 
-        external 
-        view 
+    function getPositionDetails(uint256 tokenId)
+        external
+        view
         returns (
             address token0,
             address token1,
@@ -802,11 +971,11 @@ contract LPBattleVault is IERC721Receiver {
             uint256 valueUSD,
             uint256 fees0,
             uint256 fees1
-        ) 
+        )
     {
         uint128 tokensOwed0;
         uint128 tokensOwed1;
-        
+
         (
             ,
             ,
@@ -821,7 +990,7 @@ contract LPBattleVault is IERC721Receiver {
             tokensOwed0,
             tokensOwed1
         ) = positionManager.positions(tokenId);
-        
+
         (amount0, amount1, valueUSD) = this.getLPTokenValueUSD(tokenId);
         fees0 = uint256(tokensOwed0);
         fees1 = uint256(tokensOwed1);
