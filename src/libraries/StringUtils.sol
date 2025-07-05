@@ -27,12 +27,13 @@ library StringUtils {
 
     /**
      * @dev Helper function to format USD values with decimal places
-     * @param raw The raw USD value (with 8 decimal places)
+     * @param raw The raw USD value (with 18 decimal places)
      * @return Formatted string like "123.45 USD"
      */
     function formatUSDValue(uint256 raw) external pure returns (string memory) {
-        uint256 dollars = raw / 1e8;
-        uint256 cents = (raw % 1e8) / 1e6;
+        // Convert from 18 decimals to dollars and cents
+        uint256 dollars = raw / 1e18;
+        uint256 cents = (raw % 1e18) / 1e16; // Get 2 decimal places for cents
 
         return string(
             abi.encodePacked(
@@ -40,6 +41,29 @@ library StringUtils {
                 ".",
                 cents < 10 ? "0" : "", // pad single digit cents
                 _uint2str(cents),
+                " USD"
+            )
+        );
+    }
+
+    /**
+     * @dev Helper function to format USD values with more precision (4 decimal places)
+     * @param raw The raw USD value (with 18 decimal places)
+     * @return Formatted string like "123.4567 USD"
+     */
+    function formatUSDValuePrecise(uint256 raw) external pure returns (string memory) {
+        // Convert from 18 decimals to dollars and 4 decimal places
+        uint256 dollars = raw / 1e18;
+        uint256 decimals = (raw % 1e18) / 1e14; // Get 4 decimal places
+
+        return string(
+            abi.encodePacked(
+                _uint2str(dollars),
+                ".",
+                decimals < 1000 ? "0" : "",
+                decimals < 100 ? "0" : "",
+                decimals < 10 ? "0" : "",
+                _uint2str(decimals),
                 " USD"
             )
         );

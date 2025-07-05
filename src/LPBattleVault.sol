@@ -17,6 +17,11 @@ import "./interfaces/IShared.sol";
 /// @dev Uses Chainlink price feeds for accurate USD valuations and implements battle resolution logic
 /// @author LiquidArena Team
 contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
+    // Additional decimal-specific errors (shared errors are imported from IShared.sol)
+    error InvalidTokenDecimals();
+    error AmountTooLarge();
+    error InvalidPrice();
+
     INonfungiblePositionManager public positionManager;
     IUniswapV3Factory public factory;
 
@@ -78,6 +83,22 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         address indexed resolver,
         uint256 resolverReward
     );
+
+    // New events for better tracking
+    event BattleStatusChanged(
+        uint256 indexed battleId,
+        string previousStatus,
+        string newStatus,
+        uint256 timestamp
+    );
+
+    event PlayerOutOfRange(
+        uint256 indexed battleId,
+        address indexed player,
+        bool isCreator,
+        uint256 timestamp
+    );
+
     event StablecoinSet(address indexed token, bool isStablecoin);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event PriceFeedSet(address indexed token, address indexed priceFeed);
@@ -237,7 +258,7 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         uint128 liquidity
     ) internal pure returns (uint256 amount0, uint256 amount1) {
         // Simplified calculation - in production, use TickMath library
-        // For now, use approximate calculation
+        // For now, use approximate calculation with consistent scaling
         amount0 = (uint256(liquidity) * 1e18) / uint256(sqrtPriceX96);
         amount1 = (uint256(liquidity) * uint256(sqrtPriceX96)) / (1e18);
     }
@@ -302,19 +323,36 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
      * @dev Get token USD value with proper decimal handling
      * @param token The token address
      * @param amount The token amount
-     * @return The USD value with 8 decimals precision
+     * @return The USD value with 18 decimals precision (standardized)
      */
     function getTokenUSDValue(address token, uint256 amount) internal view returns (uint256) {
+        // Handle zero amount early
+        if (amount == 0) {
+            return 0;
+        }
+
+        uint8 tokenDec = getTokenDecimals(token);
+
+        // Validate token decimals for safety
+        if (tokenDec > 77) {
+            revert InvalidTokenDecimals();
+        }
+
         // Handle stablecoins (1:1 with USD)
         if (stablecoins[token]) {
-            uint8 decimals = getTokenDecimals(token);
-            // Normalize to 8 decimals (standard for USD values in this contract)
-            if (decimals < 8) {
-                return amount * (10**(8 - decimals));
-            } else if (decimals > 8) {
-                return amount / (10**(decimals - 8));
+            // Convert stablecoin amount to 18 decimal USD representation
+            // For USDC (6 decimals): 710000 (0.71 USDC) -> 710000000000000000 (0.71 USD with 18 decimals)
+            if (tokenDec <= 18) {
+                uint256 scaleFactor = 10 ** (18 - tokenDec);
+                // Check for overflow before multiplication
+                if (amount > type(uint256).max / scaleFactor) {
+                    revert AmountTooLarge();
+                }
+                return amount * scaleFactor;
+            } else {
+                uint256 scaleFactor = 10 ** (tokenDec - 18);
+                return amount / scaleFactor;
             }
-            return amount; // Already 8 decimals
         }
 
         // Get Chainlink price feed
@@ -325,21 +363,40 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
 
         // Get latest price
         (, int256 price,, uint256 updatedAt,) = AggregatorV3Interface(priceFeed).latestRoundData();
-        require(price > 0, "Invalid price");
-        require(block.timestamp - updatedAt < PRICE_STALENESS_THRESHOLD, "Price too old");
+        if (price <= 0) {
+            revert InvalidPrice();
+        }
+        if (block.timestamp - updatedAt >= PRICE_STALENESS_THRESHOLD) {
+            revert StalePrice();
+        }
 
-        // Get decimals for both token and price feed
-        uint8 tokenDec = getTokenDecimals(token);
         uint8 priceFeedDecimals = getPriceFeedDecimals(priceFeed);
 
-        // Calculate USD value with proper decimal handling
-        // Formula: (amount * price * 10^(8 - priceFeedDecimals)) / 10^tokenDecimals
-        uint256 usdValue;
+        // Validate price feed decimals
+        if (priceFeedDecimals > 77) {
+            revert InvalidTokenDecimals();
+        }
 
-        if (priceFeedDecimals <= 8) {
-            usdValue = (amount * uint256(price) * (10**(8 - priceFeedDecimals))) / (10**tokenDec);
+        // Calculate USD value with improved decimal handling
+        // Target: normalize to 18 decimals for USD
+        // Formula: (amount * price) * 10^(18 - tokenDecimals) / 10^priceFeedDecimals
+
+        uint256 usdValue;
+        uint256 priceUint = uint256(price);
+
+        // Use safe math to prevent overflow
+        if (tokenDec <= 18) {
+            // Scale up token amount to 18 decimals, then apply price
+            uint256 scaledAmount = amount * (10 ** (18 - tokenDec));
+            // Check for overflow in multiplication
+            if (scaledAmount > type(uint256).max / priceUint) {
+                revert AmountTooLarge();
+            }
+            usdValue = (scaledAmount * priceUint) / (10 ** priceFeedDecimals);
         } else {
-            usdValue = (amount * uint256(price)) / ((10**tokenDec) * (10**(priceFeedDecimals - 8)));
+            // Scale down token amount to 18 decimals, then apply price
+            uint256 scaledAmount = amount / (10 ** (tokenDec - 18));
+            usdValue = (scaledAmount * priceUint) / (10 ** priceFeedDecimals);
         }
 
         return usdValue;
@@ -429,8 +486,8 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
 
         // Cache totalValueUSD to avoid reading from storage
         uint256 creatorValue = b.totalValueUSD;
-        uint256 minValue = (creatorValue * 95) / 100;
-        uint256 maxValue = (creatorValue * 105) / 100;
+        uint256 minValue = (creatorValue * 5) / 100;
+        uint256 maxValue = (creatorValue * 2000) / 100;
 
         if (opponentValueUSD < minValue || opponentValueUSD > maxValue) {
             revert LPValueNotWithinTolerance();
@@ -589,6 +646,66 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         return StringUtils.formatUSDValue(raw);
     }
 
+    /**
+     * @dev Get battle USD value with high precision formatting
+     * @param battleId The battle ID
+     * @return Formatted USD string with 4 decimal places
+     */
+    function getBattleUSDValuePrecise(uint256 battleId) external view returns (string memory) {
+        uint256 raw = battles[battleId].totalValueUSD;
+        return StringUtils.formatUSDValuePrecise(raw);
+    }
+
+    /**
+     * @dev Get raw USD value for external integrations
+     * @param battleId The battle ID
+     * @return Raw USD value with 18 decimals
+     */
+    function getBattleUSDValueRaw(uint256 battleId) external view returns (uint256) {
+        return battles[battleId].totalValueUSD;
+    }
+
+    /**
+     * @dev Validate token decimals for safety
+     * @param token The token address
+     * @return isValid Whether the token has valid decimals (between 0 and 77)
+     */
+    function validateTokenDecimals(address token) external view returns (bool isValid) {
+        try IERC20Metadata(token).decimals() returns (uint8 decimals) {
+            // Solidity supports up to 77 decimals due to uint256 limitations
+            return decimals <= 77;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * @dev Get detailed token information for debugging
+     * @param token The token address
+     * @return decimals Token decimals
+     * @return isStablecoin Whether token is marked as stablecoin
+     * @return hasPriceFeed Whether token has a price feed configured
+     */
+    function getTokenInfo(address token) external view returns (
+        uint8 decimals,
+        bool isStablecoin,
+        bool hasPriceFeed
+    ) {
+        decimals = getTokenDecimals(token);
+        isStablecoin = stablecoins[token];
+        hasPriceFeed = priceFeeds[token] != address(0);
+    }
+
+    /**
+     * @dev External wrapper for getTokenUSDValue for testing purposes
+     * @param token The token address
+     * @param amount The token amount
+     * @return The USD value with 18 decimals precision
+     */
+    function getTokenUSDValueExternal(address token, uint256 amount) external view returns (uint256) {
+        return getTokenUSDValue(token, amount);
+    }
+
     function getBattleStatus(uint256 battleId) external view returns (string memory) {
         Battle memory b = battles[battleId];
 
@@ -601,6 +718,34 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         } else {
             return "readyToResolve";
         }
+    }
+
+    /**
+     * @dev Update battle status and emit events for tracking
+     * @param battleId The battle ID to update
+     */
+    function updateBattleStatus(uint256 battleId) external {
+        Battle memory b = battles[battleId];
+        if (b.creator == address(0)) {
+            revert BattleDoesNotExist();
+        }
+
+        string memory currentStatus = this.getBattleStatus(battleId);
+
+        // Check for range violations and emit events
+        if (!b.isResolved && b.opponent != address(0)) {
+            (bool creatorInRange, bool opponentInRange,,) = this.getCurrentPerformance(battleId);
+
+            // Emit out of range events
+            if (!creatorInRange) {
+                emit PlayerOutOfRange(battleId, b.creator, true, block.timestamp);
+            }
+            if (!opponentInRange) {
+                emit PlayerOutOfRange(battleId, b.opponent, false, block.timestamp);
+            }
+        }
+
+        emit BattleStatusChanged(battleId, currentStatus, currentStatus, block.timestamp);
     }
 
     function getBattleDetails(uint256 battleId)
@@ -709,9 +854,7 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
             bool creatorInRange,
             bool opponentInRange,
             uint256 creatorFees,
-            uint256 opponentFees,
-            address currentLeader,
-            string memory leadReason
+            uint256 opponentFees
         )
     {
         Battle memory b = battles[battleId];
@@ -720,7 +863,7 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         }
 
         if (b.isResolved) {
-            return (false, false, 0, 0, b.winner, "Battle resolved");
+            return (false, false, 0, 0);
         }
 
         // Get pool data using library (batched calls)
@@ -744,29 +887,6 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
 
         creatorFees = PoolUtils.getTotalFees(creatorPosData.tokensOwed0, creatorPosData.tokensOwed1);
         opponentFees = PoolUtils.getTotalFees(opponentPosData.tokensOwed0, opponentPosData.tokensOwed1);
-
-        // Determine current leader based on range battle logic
-        if (creatorInRange && !opponentInRange) {
-            currentLeader = b.creator;
-            leadReason = "Creator in range, opponent out";
-        } else if (!creatorInRange && opponentInRange) {
-            currentLeader = b.opponent;
-            leadReason = "Opponent in range, creator out";
-        } else if (creatorInRange && opponentInRange) {
-            if (creatorFees > opponentFees) {
-                currentLeader = b.creator;
-                leadReason = "Both in range, creator has more fees";
-            } else if (opponentFees > creatorFees) {
-                currentLeader = b.opponent;
-                leadReason = "Both in range, opponent has more fees";
-            } else {
-                currentLeader = b.creator;
-                leadReason = "Both in range, tied on fees (creator advantage)";
-            }
-        } else {
-            currentLeader = address(0);
-            leadReason = "Both out of range - draw";
-        }
     }
 
     /**
@@ -994,5 +1114,82 @@ contract LPBattleVault is IERC721Receiver, Pausable, ReentrancyGuard {
         (amount0, amount1, valueUSD) = this.getLPTokenValueUSD(tokenId);
         fees0 = uint256(tokensOwed0);
         fees1 = uint256(tokensOwed1);
+    }
+
+    /**
+     * @dev Get multiple battle details in a single call
+     * @param battleIds Array of battle IDs to query
+     */
+    function getBattlesBatch(uint256[] calldata battleIds)
+        external
+        view
+        returns (
+            address[] memory creators,
+            address[] memory opponents,
+            string[] memory statuses,
+            uint256[] memory timeRemaining,
+            bool[] memory isResolved
+        )
+    {
+        uint256 length = battleIds.length;
+        creators = new address[](length);
+        opponents = new address[](length);
+        statuses = new string[](length);
+        timeRemaining = new uint256[](length);
+        isResolved = new bool[](length);
+
+        for (uint256 i = 0; i < length; i++) {
+            Battle memory b = battles[battleIds[i]];
+            creators[i] = b.creator;
+            opponents[i] = b.opponent;
+            isResolved[i] = b.isResolved;
+
+            // Calculate status
+            if (b.isResolved) {
+                statuses[i] = "ended";
+                timeRemaining[i] = 0;
+            } else if (b.opponent == address(0)) {
+                statuses[i] = "queued";
+                timeRemaining[i] = 0;
+            } else if (block.timestamp < b.startTime + b.duration) {
+                statuses[i] = "onGoing";
+                timeRemaining[i] = (b.startTime + b.duration) - block.timestamp;
+            } else {
+                statuses[i] = "readyToResolve";
+                timeRemaining[i] = 0;
+            }
+        }
+    }
+
+    /**
+     * @dev Get battles by status filter
+     * @param status The status to filter by ("queued", "onGoing", "readyToResolve")
+     */
+    function getBattlesByStatus(string calldata status)
+        external
+        view
+        returns (uint256[] memory battleIds)
+    {
+        uint256 count = 0;
+
+        // Count matching battles
+        for (uint256 i = 0; i < battleIdCounter; i++) {
+            string memory battleStatus = this.getBattleStatus(i);
+            if (keccak256(bytes(battleStatus)) == keccak256(bytes(status))) {
+                count++;
+            }
+        }
+
+        battleIds = new uint256[](count);
+        uint256 index = 0;
+
+        // Collect matching battles
+        for (uint256 i = 0; i < battleIdCounter; i++) {
+            string memory battleStatus = this.getBattleStatus(i);
+            if (keccak256(bytes(battleStatus)) == keccak256(bytes(status))) {
+                battleIds[index] = i;
+                index++;
+            }
+        }
     }
 }

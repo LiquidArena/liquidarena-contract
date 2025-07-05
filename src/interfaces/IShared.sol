@@ -19,7 +19,6 @@ error BattleDoesNotExist();
 error PriceFeedNotSet();
 error StalePrice();
 
-// Additional comprehensive errors
 error BattleDurationTooShort(uint256 provided, uint256 minimum);
 error BattleDurationTooLong(uint256 provided, uint256 maximum);
 error PriceTooStale(uint256 age, uint256 threshold);
